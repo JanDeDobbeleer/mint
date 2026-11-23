@@ -7,20 +7,20 @@
 
 # mint
 
-Launch GitHub Copilot CLI in its local sandbox with a short-lived GitHub App token scoped to the current repository.
+Launch GitHub Copilot CLI in its local sandbox with a fine-grained personal access token scoped to the current repository.
 
 ```powershell
 mint
 ```
 
-Sandboxed `gh` commands use the App token. Copilot keeps your existing home and settings, and mint does not replace
+Sandboxed `gh` commands use the repository token. Copilot keeps your existing home and settings, and mint does not replace
 your normal GitHub CLI login.
 
 ## Requirements
 
 - GitHub CLI and Git.
 - GitHub Copilot CLI 1.0.112 or later, with a supported local sandbox host.
-- A GitHub App installed on the repositories you intend to use.
+- A GitHub account with access to the repositories where you intend to use mint.
 - A separate credential authorized to use Copilot.
 
 Only GitHub.com is supported.
@@ -40,105 +40,54 @@ The package installs the `mint.exe` command alias. Choose the file matching your
 On macOS, Linux, and FreeBSD, download the matching standalone binary from the same release and place it on `PATH`.
 No GitHub CLI extension is installed.
 
-## Configure a GitHub App
+## Configure Mint
 
-1. Open [New GitHub App](https://github.com/settings/apps/new) for a personally owned App. For organization
-   ownership, use the organization's Settings > Developer settings > GitHub Apps > New GitHub App.
-2. Enter a unique App name and a homepage URL, such as your GitHub profile. Leave callback and setup URLs empty.
-   Leave user authorization and device flow disabled, and uncheck Webhooks > Active. This launcher uses installation
-   tokens, not user OAuth authorization.
-3. Grant only the App permissions your sessions need. For repository work, Contents, Issues, and Pull requests are
-   common choices. Choose Read-only for inspection or Read & write for resources you intend to modify. The launcher
-   inherits all permissions granted to the installation, so avoid unnecessary organization or account privileges.
-4. Choose Only on this account for installations on the owning account, or Any account if you also need installations
-   on other accounts or organizations. Create the App and copy its numeric **App ID**, not its Client ID.
-5. In the App settings, open Credentials > Key pairs > New key. Move the downloaded RSA PEM into a dedicated directory
-   outside your Git checkouts, such as `C:\secure\mint\app.pem`. Remove any leftover copy from Downloads. Never
-   commit the key or share its contents.
-6. Restrict that directory with your operating system's access controls. On Windows, Go's `0600` file mode does not
-   replace NTFS ACLs. Setup imports the key into mint's key directory with passphrase encryption and offers to
-   delete the original after verification.
-7. Select Install App, choose the target account, then Only select repositories. Select the repositories where you
-   will use the launcher. Each session still receives access to just the repository it starts in.
-
-GitHub documents [App registration][app-registration], [private keys][app-keys], and
-[installing your App][app-installation] in more detail.
-
-[app-registration]: https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app
-[app-keys]: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps
-[app-installation]: https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app
-
-### Configure the launcher
-
-Configure mint once:
+Run setup from a GitHub checkout:
 
 ```powershell
-mint setup --app-id 123456 --key-file "C:\secure\mint\app.pem"
+mint setup
 ```
 
-Setup applies the [credential policy](#copilot-authentication) to your normal Copilot home.
-Run `mint setup` with no options to reapply it. This updates only Mint's required settings; tool and cache grants stay unchanged.
-Initial setup never overwrites an existing configuration. Review and edit the existing configuration to change its values,
-or use the explicit key-encryption migration below.
+Setup saves the remote name and trusted Copilot executable, then applies the [credential policy](#copilot-authentication)
+to your normal Copilot home. Run `mint setup` again to reapply that policy. Setup does not replace an existing
+configuration; edit it manually to change the remote or executable. On first setup, `--remote` selects a non-default
+remote and `--copilot` pins a trusted executable path.
 
-Setup asks for a new passphrase twice using hidden terminal prompts, writes an encrypted PKCS#8 key under
-`keys/app.encrypted.pem` beside mint's configuration, and verifies that it decrypts to the original key before
-saving the configuration. It then asks whether to delete the original; only typing `yes` authorizes deletion.
-Declining or interrupting this confirmation leaves the original in place. Existing encrypted keys are never overwritten.
+On the first launch in each repository, Mint prints a pre-filled link to create a fine-grained personal access token.
+Select **Only select repositories** and choose the repository Mint found from the configured Git remote. The form
+pre-fills write access for Contents, Issues, Pull requests, and Workflows; remove any permissions you do not need.
+Metadata read access is implicit. Contents write is needed to push, Pull requests write to create PRs, and Workflows
+write to push changes to workflow files. Mint validates that GitHub allows the token to read the repository, but
+cannot safely verify every write permission without attempting those operations.
 
-To encrypt the key referenced by an existing mint configuration:
+Paste the token at the hidden prompt. Mint asks for a token-store passphrase, encrypts the token in a per-repository
+file in its user configuration directory, and asks for that passphrase again on later launches. Use a long, unique
+passphrase. The token and passphrase are never written to plain-text files or printed by Mint. Use the same passphrase
+for multiple repositories if you prefer.
 
-```powershell
-mint setup --encrypt-key
-```
+Fine-grained tokens belong to the user who created them. Operations are attributed to that user, and the token can
+remain valid after a Mint session ends. Mint checks repository access on each launch. If the token is expired or
+revoked, Mint asks you to replace it; other GitHub errors are reported. Revoke tokens in GitHub when you no longer
+need them.
 
-This preserves your App ID, remote, executable path, and other configuration fields, updating only `key_file`.
-It does nothing if the configured key is already encrypted. On failure before configuration is saved, the original
-key and configuration are retained.
+Mint does not use or delete GitHub App keys from older configurations. The old `app_id` field is ignored; the old
+`key_file` path remains only to deny its directory to Copilot's built-in file tools. Remove the field and old key
+yourself once nothing else uses it. Mint uses your normal Copilot home (`COPILOT_HOME` if set, otherwise Copilot's
+default); normal launches do not edit its settings.
 
-Each encrypted-key launch prompts for the passphrase again. Use a long, unique passphrase; mint does not accept
-passphrases in arguments or environment variables, cache them, or send them to Copilot. Decryption happens in memory,
-never through a decrypted temporary file. Redirected prompt input for Copilot is not used for passphrases: mint uses
-the controlling terminal instead. A terminal is required to unlock an encrypted key.
-
-### How permissions work
-
-**The App installation is the source of truth.** Every token request omits `permissions`, so GitHub grants the
-token all permissions granted to that installation. There is no `--permissions` option or read-only default.
-To change session authority, change the App's permissions in GitHub and approve installation updates when required.
-Restart `mint` afterward to mint a new token with the updated grants.
-
-Repository selection is independent of permission levels: even a write-enabled token remains restricted to the
-current repository. Operations made with this token act as the App, not your personal account.
-Installation-wide non-repository privileges are inherited too; avoid granting them unless you need them.
-
-Configurations created by older versions may contain a `permissions` field. It is ignored and can be removed;
-you do not need to rerun setup.
-
-Optional setup flags:
-
-- `--remote upstream` selects a different remote; the default is `origin`.
-- `--copilot "C:\trusted\copilot.exe"` pins a trusted executable instead of resolving it from `PATH` during setup.
-
-Configuration contains the App ID, canonical encrypted-key and executable paths, and remote name.
-It contains no token, passphrase, or private key material.
-
-Legacy `settings` and `sandbox` fields in mint's configuration are ignored. mint uses your normal Copilot home
-(`COPILOT_HOME` if set, otherwise Copilot's default). Normal launches do not edit its settings.
-
-Configuration stays in the existing OS user configuration directory so current installations keep using their
-encrypted key without migration:
+Configuration and encrypted per-repository tokens stay in the OS user configuration directory. Tokens are stored
+under its `tokens` subdirectory:
 
 - Windows: `%APPDATA%\gh-mint\config.json`
 - Linux: `$XDG_CONFIG_HOME/gh-mint/config.json`, or `~/.config/gh-mint/config.json`
 - macOS: `~/Library/Application Support/gh-mint/config.json`
 
-Setup pins the resolved executable path. If an upgrade moves the actual Copilot binary, update the configured path.
+On Windows, Go's `0600` file mode does not replace NTFS ACLs. Restrict access to Mint's configuration directory.
 
 ## Copilot authentication
 
 mint uses `COPILOT_GITHUB_TOKEN` for Copilot itself, falling back to `gh auth token --hostname github.com`.
-Sandboxed `gh` commands use the separate App token supplied as `GH_TOKEN`. Mint disables automatic Git authentication
+Sandboxed `gh` commands use the repository PAT supplied as `GH_TOKEN`. Mint disables automatic Git authentication
 and supplies a separately masked HTTPS credential in `MINT_GIT_AUTH`. Mint puts `mint-git.instructions.md` in a temporary
 session directory and adds it to `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. The instructions show Copilot how to use
 `git --config-env` against the scoped repository and how to open a PR after pushing. The file contains no secrets.
@@ -146,7 +95,7 @@ This guides the agent; it does not change how plain `git push` works or rewrite 
 
 `mint setup` applies the policy below to your existing Copilot home, or you can merge it into `settings.json` yourself.
 It applies to sandboxed Copilot sessions using that home. Setup leaves tool grants unchanged and does not enable
-sandboxing for ordinary Copilot launches. Mint checks the policy before minting a token.
+sandboxing for ordinary Copilot launches. Mint checks the policy before loading a repository token.
 
 ```json
 {
@@ -214,13 +163,10 @@ when you invoke mint from a subdirectory. A non-default or ambiguous remote is n
 
 ### Lifetime and cleanup
 
-GitHub installation tokens expire after one hour. There is no transparent refresh. Restart `mint` when needed.
-Changing directories, remotes, or the prompt does not expand the already-minted token's access.
-
-The launcher attempts to revoke the token on normal exit, child failure, and handled interruption. A hard kill or
-failed revocation leaves the token valid until its expiry. Temporary Git and GitHub CLI configuration is removed on
-handled exit. Copilot keeps session history in your normal home; launch through mint again when resuming to obtain
-a fresh scoped token.
+The PAT's expiration is chosen during creation and may be limited by organization policy. Mint neither refreshes nor
+revokes it. It remains encrypted in Mint's configuration until you revoke it in GitHub or replace its local copy.
+Temporary Git and GitHub CLI configuration is removed on handled exit. Copilot keeps session history in your normal
+home; launch through Mint again when resuming so credentials are revalidated for the current remote.
 
 ## Development
 
@@ -242,10 +188,9 @@ golangci-lint run
 go build -trimpath -o mint.exe .
 ```
 
-Tests use local HTTP servers, ephemeral test keys, and a real helper subprocess. They verify the repository and
-permission inheritance, JWT signatures, encrypted-key setup and decryption, redirect refusal, argument/environment
-forwarding, PEM-directory guardrails, revocation,
-and exit-status propagation without live GitHub credentials.
+Tests use local HTTP servers and helper subprocesses. They verify repository-token validation and encryption,
+redirect refusal, argument/environment forwarding, configuration-directory guardrails, and exit-status propagation
+without live GitHub credentials.
 
 CI checks Windows, Linux, and macOS. Every push to protected `main` automatically builds standalone macOS, Linux, and FreeBSD
 binaries, architecture-specific Windows MSIX packages, and matching AppInstaller manifests. Windows executables

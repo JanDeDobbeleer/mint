@@ -97,17 +97,6 @@ func gitEnvironment(environ []string) []string {
 }
 
 func protectPaths(repo repository, dir string, cfg config) ([]string, error) {
-	key, err := canonicalPath(cfg.KeyFile)
-	if err != nil {
-		return nil, err
-	}
-	if key != cfg.KeyFile {
-		return nil, errors.New("private key path changed; update the configuration with its canonical path")
-	}
-	keyDirectory := filepath.Dir(key)
-	if within(keyDirectory, repo.Root) || within(repo.Root, keyDirectory) {
-		return nil, errors.New("private key directory must be outside and not contain the working tree")
-	}
 	configDir, err := canonicalPath(dir)
 	if err != nil {
 		return nil, err
@@ -115,12 +104,49 @@ func protectPaths(repo repository, dir string, cfg config) ([]string, error) {
 	if within(configDir, repo.Root) || within(repo.Root, configDir) {
 		return nil, errors.New("mint configuration directory must be outside and not contain the working tree")
 	}
-	if strings.ContainsAny(keyDirectory+configDir, "*?[]") {
-		return nil, errors.New("private key and configuration directories cannot contain glob metacharacters")
+	if strings.ContainsAny(configDir, "*?[]") {
+		return nil, errors.New("mint configuration directory cannot contain glob metacharacters")
 	}
-	if within(keyDirectory, cfg.Copilot) {
-		return nil, errors.New("copilot executable must be outside the private key directory")
+	denied := []string{configDir}
+	if cfg.LegacyKeyFile == "" {
+		return denied, nil
 	}
-
-	return []string{keyDirectory, configDir}, nil
+	if !filepath.IsAbs(cfg.LegacyKeyFile) {
+		return nil, errors.New("legacy private key path must be absolute")
+	}
+	keyDirPath := filepath.Dir(cfg.LegacyKeyFile)
+	dirInfo, err := os.Stat(keyDirPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return denied, nil
+	}
+	if err != nil || !dirInfo.IsDir() {
+		return nil, errors.New("cannot inspect legacy private key directory")
+	}
+	keyDir, err := canonicalPath(keyDirPath)
+	if err != nil {
+		return nil, errors.New("cannot resolve legacy private key directory")
+	}
+	info, err := os.Lstat(cfg.LegacyKeyFile)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, errors.New("cannot inspect legacy private key")
+	}
+	if err == nil && !info.Mode().IsRegular() {
+		return nil, errors.New("legacy private key must be a regular file")
+	}
+	if err == nil {
+		key, keyErr := canonicalPath(cfg.LegacyKeyFile)
+		if keyErr != nil || key != cfg.LegacyKeyFile || filepath.Dir(key) != keyDir {
+			return nil, errors.New("legacy private key path changed; update the configuration before launching")
+		}
+	}
+	if within(keyDir, repo.Root) || within(repo.Root, keyDir) {
+		return nil, errors.New("legacy private key directory must be outside and not contain the working tree")
+	}
+	if strings.ContainsAny(keyDir, "*?[]") {
+		return nil, errors.New("legacy private key directory cannot contain glob metacharacters")
+	}
+	if within(keyDir, cfg.Copilot) {
+		return nil, errors.New("copilot executable must be outside the legacy private key directory")
+	}
+	return append(denied, keyDir), nil
 }

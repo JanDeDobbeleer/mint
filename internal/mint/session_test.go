@@ -6,15 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -169,7 +166,7 @@ func fakeCopilotBinary(t *testing.T) string {
 	return path
 }
 
-func TestSessionLaunchesAnIsolatedChildAndRevokesItsToken(t *testing.T) {
+func TestSessionLaunchesAnIsolatedChildWithoutManagingTokenLifecycle(t *testing.T) {
 	binary := fakeCopilotBinary(t)
 	tests := []struct {
 		name       string
@@ -186,7 +183,6 @@ func TestSessionLaunchesAnIsolatedChildAndRevokesItsToken(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var revoked atomic.Bool
 			root, err := canonicalPath(t.TempDir())
 			require.NoError(t, err)
 			keyDir := filepath.Join(t.TempDir(), "private")
@@ -200,16 +196,6 @@ func TestSessionLaunchesAnIsolatedChildAndRevokesItsToken(t *testing.T) {
 				args = []string{"--prompt=" + tt.prompt}
 			}
 			s := session{
-				github: &githubClient{
-					base: "https://api.github.test",
-					http: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-						assert.Equal(t, http.MethodDelete, request.Method)
-						assert.Equal(t, "/installation/token", request.URL.Path)
-						assert.Equal(t, "Bearer repository-test-token", request.Header.Get("Authorization"))
-						revoked.Store(true)
-						return testHTTPResponse(request, http.StatusNoContent, nil, ""), nil
-					})},
-				},
 				execute: execute, stdout: &stdout, stderr: &stderr, stdin: strings.NewReader(""),
 				cfg: config{Copilot: binary}, repo: repository{Root: root, Owner: "owner", Name: "project"},
 				copilotCredential: "copilot-account-secret",
@@ -230,8 +216,7 @@ func TestSessionLaunchesAnIsolatedChildAndRevokesItsToken(t *testing.T) {
 				require.NoError(t, os.WriteFile(filepath.Join(home, "settings.json"), []byte(settings), 0o600))
 				s.environ = append(s.environ, "COPILOT_HOME="+home, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS="+home)
 			}
-			err = s.runWithToken(t.Context(), installationToken{Token: "repository-test-token", ExpiresAt: time.Now().Add(time.Hour)})
-			assert.True(t, revoked.Load())
+			err = s.runWithToken(t.Context(), "repository-test-token")
 			assert.NotContains(t, stderr.String(), "secret")
 			assert.NotContains(t, stderr.String(), "repository-test-token")
 			if tt.startErr {

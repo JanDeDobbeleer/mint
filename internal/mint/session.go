@@ -24,7 +24,6 @@ var gitInstructions []byte
 const gitInstructionsName = "mint-git.instructions.md"
 
 type session struct {
-	github            *githubClient
 	execute           func(*exec.Cmd) error
 	stdin             io.Reader
 	stdout            io.Writer
@@ -37,15 +36,7 @@ type session struct {
 	environ           []string
 }
 
-func (s session) runWithToken(ctx context.Context, token installationToken) error {
-	defer func() {
-		revokeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := s.github.revoke(revokeCtx, token.Token); err != nil {
-			_, _ = fmt.Fprintln(s.stderr, "mint: could not revoke the installation token; it will expire automatically")
-		}
-	}()
-
+func (s session) runWithToken(ctx context.Context, token string) error {
 	servers, err := projectConfiguration(s.repo.Root)
 	if err != nil {
 		return err
@@ -74,8 +65,8 @@ func (s session) runWithToken(ctx context.Context, token installationToken) erro
 		"GIT_CONFIG_KEY_0":   "credential.helper",
 		"GIT_CONFIG_VALUE_0": "",
 	}
-	overrides["GH_TOKEN"] = token.Token
-	overrides["MINT_GIT_AUTH"] = base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token.Token))
+	overrides["GH_TOKEN"] = token
+	overrides["MINT_GIT_AUTH"] = base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	overrides["GH_CONFIG_DIR"] = ghHome
 	overrides["GH_HOST"] = "github.com"
 	overrides["GH_REPO"] = s.repo.Owner + "/" + s.repo.Name
@@ -103,8 +94,8 @@ func (s session) runWithToken(ctx context.Context, token installationToken) erro
 	cmd.Stdin = s.stdin
 	cmd.Stdout = s.stdout
 	cmd.Stderr = s.stderr
-	if _, err := fmt.Fprintf(s.stderr, "mint: %s/%s; repository token expires at %s; sandbox requested\n",
-		s.repo.Owner, s.repo.Name, token.ExpiresAt.Local().Format(time.RFC3339)); err != nil {
+	if _, err := fmt.Fprintf(s.stderr, "mint: %s/%s; repository token validated; sandbox requested\n",
+		s.repo.Owner, s.repo.Name); err != nil {
 		return errors.New("cannot report launch status")
 	}
 	return s.execute(cmd)

@@ -6,15 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
 type config struct {
-	KeyFile string `json:"key_file"`
-	Copilot string `json:"copilot"`
-	Remote  string `json:"remote"`
-	AppID   int64  `json:"app_id"`
+	Copilot       string `json:"copilot"`
+	Remote        string `json:"remote"`
+	LegacyKeyFile string `json:"key_file,omitempty"`
 }
 
 func configDirectory() (string, error) {
@@ -28,7 +26,7 @@ func configDirectory() (string, error) {
 func readConfig(dir string) (config, error) {
 	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err != nil {
-		return config{}, errors.New("cannot read configuration; run 'mint setup --help'")
+		return config{}, errors.New("cannot read configuration; run 'mint setup'")
 	}
 	var cfg config
 	if err := json.Unmarshal(data, &cfg); err != nil {
@@ -41,11 +39,8 @@ func readConfig(dir string) (config, error) {
 }
 
 func (c config) validate() error {
-	if c.AppID <= 0 {
-		return errors.New("app ID must be positive")
-	}
-	if !filepath.IsAbs(c.KeyFile) || !filepath.IsAbs(c.Copilot) {
-		return errors.New("key and Copilot paths must be absolute")
+	if !filepath.IsAbs(c.Copilot) {
+		return errors.New("copilot path must be absolute")
 	}
 	if c.Remote == "" || strings.HasPrefix(c.Remote, "-") || strings.ContainsAny(c.Remote, "\x00\r\n") {
 		return errors.New("invalid Git remote name")
@@ -104,12 +99,4 @@ func within(parent, path string) bool {
 		return false
 	}
 	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
-}
-
-func parseAppID(value string) (int64, error) {
-	id, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || id <= 0 {
-		return 0, errors.New("app ID must be a positive integer")
-	}
-	return id, nil
 }
