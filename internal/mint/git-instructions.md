@@ -13,8 +13,8 @@ block rather than retrying it through another tool or shell.
 
 ## Git authentication
 
-Use the repository in `GH_REPO` for authenticated Git operations. Do not use a
-personal credential, SSH, or a credential helper. Do not print credentials, add
+Use the repository in `GH_REPO` for authenticated Git operations. Do not use any
+other credential, SSH, or a credential helper. Do not print credentials, add
 them to Git config files, or enable HTTP tracing.
 
 For a push, use this pattern in PowerShell:

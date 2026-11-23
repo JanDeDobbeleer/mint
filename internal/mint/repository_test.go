@@ -50,31 +50,49 @@ func TestProtectedPathsCannotOverlapWorkingTree(t *testing.T) {
 		err      string
 	}{
 		{name: "separate directory", location: "secrets"},
-		{name: "inside repository", location: filepath.Join("repo", "secrets"), err: "private key directory"},
-		{name: "parent of repository", location: ".", err: "private key directory"},
+		{name: "inside repository", location: filepath.Join("repo", "secrets"), err: "configuration directory"},
+		{name: "parent of repository", location: ".", err: "configuration directory"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			base, err := canonicalPath(t.TempDir())
 			require.NoError(t, err)
 			root := filepath.Join(base, "repo")
-			keyDir := filepath.Join(base, tt.location)
-			configDir := filepath.Join(base, "config")
-			for _, path := range []string{root, keyDir, configDir} {
+			configDir := filepath.Join(base, tt.location)
+			for _, path := range []string{root, configDir} {
 				require.NoError(t, os.MkdirAll(path, 0o700))
 			}
-			key := filepath.Join(keyDir, "key.pem")
-			require.NoError(t, os.WriteFile(key, nil, 0o600))
-			denied, err := protectPaths(repository{Root: root}, configDir, config{KeyFile: key})
+			denied, err := protectPaths(repository{Root: root}, configDir, config{})
 			if tt.err != "" {
 				require.ErrorContains(t, err, tt.err)
 				return
 			}
 			require.NoError(t, err)
-			assert.Contains(t, denied, keyDir)
 			assert.Contains(t, denied, configDir)
 		})
 	}
+}
+
+func TestLegacyPrivateKeyDirectoryRemainsDenied(t *testing.T) {
+	base, err := canonicalPath(t.TempDir())
+	require.NoError(t, err)
+	root := filepath.Join(base, "repo")
+	configDir := filepath.Join(base, "config")
+	keyDir := filepath.Join(base, "legacy-keys")
+	for _, path := range []string{root, configDir, keyDir} {
+		require.NoError(t, os.MkdirAll(path, 0o700))
+	}
+	key := filepath.Join(keyDir, "app.pem")
+	require.NoError(t, os.WriteFile(key, []byte("legacy"), 0o600))
+
+	denied, err := protectPaths(repository{Root: root}, configDir, config{LegacyKeyFile: key})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{configDir, keyDir}, denied)
+
+	require.NoError(t, os.Remove(key))
+	denied, err = protectPaths(repository{Root: root}, configDir, config{LegacyKeyFile: key})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{configDir, keyDir}, denied)
 }
 
 func TestGitDiscoveryIgnoresInheritedRepositoryOverrides(t *testing.T) {

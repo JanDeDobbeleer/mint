@@ -1,10 +1,12 @@
 # Security
 
-mint starts Copilot in its local sandbox and supplies a short-lived GitHub App installation token scoped to the current
-repository. The token inherits the App installation's permissions. Copilot authentication uses a separate credential.
+mint starts Copilot in its local sandbox and supplies the fine-grained personal access token stored for the current
+repository. The token is user-owned and restricted by its selected repositories and permissions. Copilot
+authentication uses a separate credential.
 
-Setup stores the App key as an encrypted PKCS#8 PEM. mint unlocks it in memory to request the token and attempts to
-revoke the token when the session ends.
+mint stores repository tokens encrypted in the user's configuration directory. One master password protects an
+encrypted store key shared by all repository token files. Tokens are decrypted in memory for launch and are not
+revoked when a session ends. Revoke tokens through GitHub if they are no longer needed.
 
 ## Reporting
 
