@@ -81,7 +81,10 @@ func TestSetupInitializesConfigAndAppliesSandboxPolicy(t *testing.T) {
 	require.NoError(t, command.Run())
 	command = exec.Command(git, "-C", root, "remote", "add", "origin", "https://github.com/owner/project.git")
 	require.NoError(t, command.Run())
+	t.Chdir(root)
 	binary := fakeCopilotBinary(t)
+	binary, err = canonicalPath(binary)
+	require.NoError(t, err)
 	settingsPath := filepath.Join(base, "settings.json")
 	require.NoError(t, os.WriteFile(settingsPath, []byte(`{"theme":"dark","sandbox":{"userPolicy":{"filesystem":{"readonlyPaths":["~/toolchain"]}}}}`), 0o600))
 	var stdout, stderr bytes.Buffer
