@@ -77,7 +77,7 @@ func TestRepositoryTokenCreationAndReuse(t *testing.T) {
 			return testHTTPResponse(request, http.StatusOK, nil, `{}`), nil
 		})},
 	}
-	prompts := &testSecretPrompter{values: []string{"github_pat_test", "store-passphrase", "store-passphrase"}}
+	prompts := &testSecretPrompter{values: []string{"store-passphrase", "store-passphrase", "github_pat_test"}}
 	var stderr bytes.Buffer
 	token, err := repositoryToken(context.Background(), client, dir, repo, prompts, &stderr)
 	require.NoError(t, err)
@@ -97,14 +97,17 @@ func TestRepositoryTokenCreationAndReuse(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "github_pat_test", token)
 	assert.Equal(t, 2, requests)
-	assert.Equal(t, []string{"Mint token-store passphrase: "}, prompts.messages)
+	assert.Equal(t, []string{"Mint master password: "}, prompts.messages)
 }
 
 func TestRepositoryTokenReplacesRevokedTokenWithoutRevokingNewToken(t *testing.T) {
 	dir := t.TempDir()
 	repo := repository{Owner: "owner", Name: "project"}
 	path := tokenFilePath(dir, repo)
-	require.NoError(t, writeEncryptedToken(path, repo, []byte("github_pat_revoked"), []byte("store-passphrase"), false))
+	key, err := unlockTokenStore(dir, &testSecretPrompter{values: []string{"store-passphrase", "store-passphrase"}})
+	require.NoError(t, err)
+	defer clear(key)
+	require.NoError(t, writeEncryptedToken(path, repo, []byte("github_pat_revoked"), key, false))
 
 	requests := 0
 	client := &githubClient{
@@ -128,7 +131,7 @@ func TestRepositoryTokenReplacesRevokedTokenWithoutRevokingNewToken(t *testing.T
 	assert.NotContains(t, stderr.String(), "github_pat_replacement")
 	assert.Equal(t, 2, requests)
 
-	decoded, err := readEncryptedToken(path, repo, []byte("store-passphrase"))
+	decoded, err := readEncryptedToken(path, repo, key)
 	require.NoError(t, err)
 	assert.Equal(t, "github_pat_replacement", string(decoded))
 	clear(decoded)
@@ -138,7 +141,10 @@ func TestRepositoryTokenDoesNotReplaceOnNetworkFailure(t *testing.T) {
 	dir := t.TempDir()
 	repo := repository{Owner: "owner", Name: "project"}
 	path := tokenFilePath(dir, repo)
-	require.NoError(t, writeEncryptedToken(path, repo, []byte("github_pat_saved"), []byte("store-passphrase"), false))
+	key, err := unlockTokenStore(dir, &testSecretPrompter{values: []string{"store-passphrase", "store-passphrase"}})
+	require.NoError(t, err)
+	defer clear(key)
+	require.NoError(t, writeEncryptedToken(path, repo, []byte("github_pat_saved"), key, false))
 	client := &githubClient{
 		base: "https://api.github.test",
 		http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -146,12 +152,12 @@ func TestRepositoryTokenDoesNotReplaceOnNetworkFailure(t *testing.T) {
 		})},
 	}
 	prompts := &testSecretPrompter{values: []string{"store-passphrase"}}
-	_, err := repositoryToken(context.Background(), client, dir, repo, prompts, &bytes.Buffer{})
+	_, err = repositoryToken(context.Background(), client, dir, repo, prompts, &bytes.Buffer{})
 	require.ErrorContains(t, err, "connectivity")
 	assert.Len(t, prompts.values, 0)
 	assert.Len(t, prompts.messages, 1)
 
-	decoded, err := readEncryptedToken(path, repo, []byte("store-passphrase"))
+	decoded, err := readEncryptedToken(path, repo, key)
 	require.NoError(t, err)
 	assert.Equal(t, "github_pat_saved", string(decoded))
 	clear(decoded)

@@ -3,7 +3,6 @@ package mint
 import (
 	"bufio"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"runtime"
@@ -47,11 +46,11 @@ func (p terminalPrompter) password(message string) ([]byte, error) {
 		return nil, err
 	}
 	defer closeTerminal()
-	if _, err := fmt.Fprint(p.stderr, message); err != nil {
+	if err := newTerminalUI(p.stderr).prompt(message); err != nil {
 		return nil, errors.New("cannot write the passphrase prompt")
 	}
 	password, err := term.ReadPassword(int(file.Fd()))
-	_, _ = fmt.Fprintln(p.stderr)
+	_, _ = io.WriteString(p.stderr, "\n")
 	if err != nil {
 		clear(password)
 		return nil, errors.New("cannot read the secret")
@@ -65,7 +64,7 @@ func (p terminalPrompter) confirm(message string) (bool, error) {
 		return false, err
 	}
 	defer closeTerminal()
-	if _, err := fmt.Fprint(p.stderr, message); err != nil {
+	if err := newTerminalUI(p.stderr).prompt(message); err != nil {
 		return false, errors.New("cannot write the confirmation prompt")
 	}
 	reply, err := bufio.NewReader(file).ReadString('\n')

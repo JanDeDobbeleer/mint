@@ -26,10 +26,19 @@ func tokenCreationURL(repo repository) string {
 }
 
 func repositoryToken(ctx context.Context, client *githubClient, dir string, repo repository, prompts secretPrompter, stderr io.Writer) (string, error) {
+	ui := newTerminalUI(stderr)
+	if err := ui.heading(repo.Owner + "/" + repo.Name); err != nil {
+		return "", errors.New("cannot show repository details")
+	}
+	key, err := unlockTokenStore(dir, prompts)
+	if err != nil {
+		return "", err
+	}
+	defer clear(key)
 	path := tokenFilePath(dir, repo)
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return createRepositoryToken(ctx, client, path, repo, prompts, stderr, nil, false)
+		return createRepositoryToken(ctx, client, path, repo, prompts, stderr, key, false)
 	}
 	if err != nil {
 		return "", errors.New("cannot inspect the saved repository token")
@@ -38,29 +47,24 @@ func repositoryToken(ctx context.Context, client *githubClient, dir string, repo
 		return "", errors.New("saved repository token must be a regular file")
 	}
 
-	password, err := prompts.password("Mint token-store passphrase: ")
+	token, err := readEncryptedToken(path, repo, key)
 	if err != nil {
-		return "", err
-	}
-	defer clear(password)
-	token, err := readEncryptedToken(path, repo, password)
-	if err != nil {
-		replace, promptErr := prompts.confirm("The saved token could not be unlocked. Replace it with a new token? Type yes to replace [no]: ")
+		replace, promptErr := prompts.confirm("The saved repository token is damaged. Replace it? Type yes to replace [no]: ")
 		if promptErr != nil {
 			return "", promptErr
 		}
 		if !replace {
-			return "", errors.New("cannot unlock the saved repository token")
+			return "", errors.New("cannot read the saved repository token")
 		}
-		return createRepositoryToken(ctx, client, path, repo, prompts, stderr, nil, true)
+		return createRepositoryToken(ctx, client, path, repo, prompts, stderr, key, true)
 	}
 	defer clear(token)
 
 	if !isFineGrainedToken(token) {
-		if _, err := fmt.Fprintf(stderr, "The saved credential is not a fine-grained personal access token for %s/%s; create a replacement token.\n", repo.Owner, repo.Name); err != nil {
+		if err := ui.status("!", "The saved credential is not a fine-grained PAT; create a replacement token."); err != nil {
 			return "", errors.New("cannot report repository token status")
 		}
-		return createRepositoryToken(ctx, client, path, repo, prompts, stderr, password, true)
+		return createRepositoryToken(ctx, client, path, repo, prompts, stderr, key, true)
 	}
 	err = client.validateRepositoryToken(ctx, repo, string(token))
 	if err == nil {
@@ -69,10 +73,10 @@ func repositoryToken(ctx context.Context, client *githubClient, dir string, repo
 	if !repositoryTokenNeedsReplacement(err) {
 		return "", err
 	}
-	if _, err := fmt.Fprintf(stderr, "The saved token cannot access %s/%s; create a replacement token.\n", repo.Owner, repo.Name); err != nil {
+	if err := ui.status("!", "The saved token cannot access this repository; create a replacement token."); err != nil {
 		return "", errors.New("cannot report repository token status")
 	}
-	return createRepositoryToken(ctx, client, path, repo, prompts, stderr, password, true)
+	return createRepositoryToken(ctx, client, path, repo, prompts, stderr, key, true)
 }
 
 func repositoryTokenNeedsReplacement(err error) bool {
@@ -83,9 +87,16 @@ func repositoryTokenNeedsReplacement(err error) bool {
 	return apiErr.status == 401 || apiErr.status == 404
 }
 
-func createRepositoryToken(ctx context.Context, client *githubClient, path string, repo repository, prompts secretPrompter, stderr io.Writer, existingPassword []byte, replace bool) (string, error) {
-	if _, err := fmt.Fprintf(stderr, "Create a fine-grained personal access token for %s/%s:\n%s\nSelect only this repository. The form pre-fills Contents, Issues, Pull requests, and Workflows write access; remove permissions you do not need.\n",
-		repo.Owner, repo.Name, tokenCreationURL(repo)); err != nil {
+func createRepositoryToken(ctx context.Context, client *githubClient, path string, repo repository, prompts secretPrompter, stderr io.Writer, key []byte, replace bool) (string, error) {
+	ui := newTerminalUI(stderr)
+	if err := ui.step("1", "Create a fine-grained token", tokenCreationURL(repo)); err != nil {
+		return "", errors.New("cannot show token creation instructions")
+	}
+	if err := ui.step("2", "Select only this repository", repo.Owner+"/"+repo.Name+
+		"\n     Contents, Issues, Pull requests, Workflows: write.\n     Remove permissions you do not need."); err != nil {
+		return "", errors.New("cannot show token creation instructions")
+	}
+	if err := ui.step("3", "Save securely", "Token input stays hidden. Your master password protects every repository."); err != nil {
 		return "", errors.New("cannot show token creation instructions")
 	}
 	input, err := prompts.password("Paste the fine-grained token (input hidden): ")
@@ -104,29 +115,10 @@ func createRepositoryToken(ctx context.Context, client *githubClient, path strin
 		return "", err
 	}
 
-	password := existingPassword
-	if len(password) == 0 {
-		password, err = prompts.password("New Mint token-store passphrase: ")
-		if err != nil {
-			return "", err
-		}
-		defer clear(password)
-		if len(password) == 0 {
-			return "", errors.New("token-store passphrase cannot be empty")
-		}
-		confirmation, promptErr := prompts.password("Confirm Mint token-store passphrase: ")
-		if promptErr != nil {
-			return "", promptErr
-		}
-		defer clear(confirmation)
-		if !bytes.Equal(password, confirmation) {
-			return "", errors.New("token-store passphrases do not match")
-		}
-	}
-	if err := writeEncryptedToken(path, repo, token, password, replace); err != nil {
+	if err := writeEncryptedToken(path, repo, token, key, replace); err != nil {
 		return "", err
 	}
-	if _, err := fmt.Fprintf(stderr, "Saved encrypted token for %s/%s.\n", repo.Owner, repo.Name); err != nil {
+	if err := ui.status("+", "Saved encrypted token for "+repo.Owner+"/"+repo.Name+"."); err != nil {
 		return "", errors.New("cannot report repository token status")
 	}
 	return string(token), nil

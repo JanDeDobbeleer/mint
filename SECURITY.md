@@ -4,9 +4,9 @@ mint starts Copilot in its local sandbox and supplies the fine-grained personal 
 repository. The token is user-owned and restricted by its selected repositories and permissions. Copilot
 authentication uses a separate credential.
 
-mint stores each repository token encrypted with a passphrase in the user's configuration directory. The token is
-decrypted in memory for launch and is not revoked when a session ends. Revoke tokens through GitHub if they are no
-longer needed.
+mint stores repository tokens encrypted in the user's configuration directory. One master password protects an
+encrypted store key shared by all repository token files. Tokens are decrypted in memory for launch and are not
+revoked when a session ends. Revoke tokens through GitHub if they are no longer needed.
 
 ## Reporting
 

@@ -29,9 +29,9 @@ func newGitHubClient() *githubClient {
 }
 
 type githubAPIError struct {
-	status int
 	method string
 	path   string
+	status int
 }
 
 func (e *githubAPIError) Error() string {

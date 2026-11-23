@@ -32,10 +32,14 @@ func tokenFilePath(dir string, repo repository) string {
 }
 
 func writeEncryptedToken(path string, repo repository, token, password []byte, replace bool) error {
+	return writeEncryptedSecret(path, token, password, tokenAssociatedData(repo), replace)
+}
+
+func writeEncryptedSecret(path string, secret, password, associatedData []byte, replace bool) error {
 	if len(password) == 0 {
 		return errors.New("token-store passphrase cannot be empty")
 	}
-	data, err := encryptToken(repo, token, password)
+	data, err := encryptSecret(secret, password, associatedData)
 	if err != nil {
 		return err
 	}
@@ -102,6 +106,10 @@ func writeEncryptedToken(path string, repo repository, token, password []byte, r
 }
 
 func readEncryptedToken(path string, repo repository, password []byte) ([]byte, error) {
+	return readEncryptedSecret(path, password, tokenAssociatedData(repo))
+}
+
+func readEncryptedSecret(path string, password, associatedData []byte) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > maxTokenFile {
 		return nil, errors.New("invalid encrypted repository token file")
@@ -132,14 +140,14 @@ func readEncryptedToken(path string, repo repository, password []byte) ([]byte, 
 	}
 	nonce := data[offset : offset+aead.NonceSize()]
 	ciphertext := data[offset+aead.NonceSize():]
-	token, err := aead.Open(nil, nonce, ciphertext, tokenAssociatedData(repo))
+	token, err := aead.Open(nil, nonce, ciphertext, associatedData)
 	if err != nil {
 		return nil, errors.New("cannot decrypt repository token")
 	}
 	return token, nil
 }
 
-func encryptToken(repo repository, token, password []byte) ([]byte, error) {
+func encryptSecret(secret, password, associatedData []byte) ([]byte, error) {
 	if len(password) == 0 {
 		return nil, errors.New("token-store passphrase cannot be empty")
 	}
@@ -161,11 +169,11 @@ func encryptToken(repo repository, token, password []byte) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, errors.New("cannot generate repository token encryption nonce")
 	}
-	result := make([]byte, 0, len(tokenFileHeader)+len(salt)+len(nonce)+len(token)+aead.Overhead())
+	result := make([]byte, 0, len(tokenFileHeader)+len(salt)+len(nonce)+len(secret)+aead.Overhead())
 	result = append(result, tokenFileHeader...)
 	result = append(result, salt...)
 	result = append(result, nonce...)
-	result = aead.Seal(result, nonce, token, tokenAssociatedData(repo))
+	result = aead.Seal(result, nonce, secret, associatedData)
 	return result, nil
 }
 

@@ -177,14 +177,21 @@ func configureSetup(ctx context.Context, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	ui := newTerminalUI(stdout)
+	if err := ui.heading("Setup"); err != nil {
+		return errors.New("cannot show setup details")
+	}
 	if err := applySandboxSettings(ctx, cfg.Copilot, dir, os.Environ(), stderr); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(stdout, "Configured Copilot credential policy in your existing settings. Tool and cache grants are unchanged.")
-	return err
+	return ui.status("+", "Configured Copilot credential policy in your existing settings. Tool and cache grants are unchanged.")
 }
 
 func initializeSetup(ctx context.Context, remote, binary string, stdout, stderr io.Writer) error {
+	ui := newTerminalUI(stdout)
+	if err := ui.heading("Setup"); err != nil {
+		return errors.New("cannot show setup details")
+	}
 	dir, err := configDirectory()
 	if err != nil {
 		return err
@@ -212,8 +219,10 @@ func initializeSetup(ctx context.Context, remote, binary string, stdout, stderr 
 	if err := writeConfig(dir, cfg); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(stdout, "Configured Mint. Run 'mint' from a repository checkout to add its encrypted token.")
-	return err
+	if err := ui.status("+", "Configured Mint. Copilot credential policy is ready."); err != nil {
+		return err
+	}
+	return ui.status(">", "Run 'mint' from a repository checkout to add its encrypted token.")
 }
 
 func copilotCredential(ctx context.Context) (string, error) {

@@ -60,10 +60,14 @@ Metadata read access is implicit. Contents write is needed to push, Pull request
 write to push changes to workflow files. Mint validates that GitHub allows the token to read the repository, but
 cannot safely verify every write permission without attempting those operations.
 
-Paste the token at the hidden prompt. Mint asks for a token-store passphrase, encrypts the token in a per-repository
-file in its user configuration directory, and asks for that passphrase again on later launches. Use a long, unique
-passphrase. The token and passphrase are never written to plain-text files or printed by Mint. Use the same passphrase
-for multiple repositories if you prefer.
+On the first launch, create one master password for Mint. The same password unlocks every repository's tokens;
+adding another repository does not create another password. Mint asks for it once per launch, then accepts the token
+at a hidden prompt when needed. Use a long, unique password. Tokens and passwords are never printed or written to
+plain-text files. A wrong master password stops the launch without replacing any credentials.
+
+Mint encrypts a random store key in `master.enc` using your master password. That key protects the separate,
+repository-bound token files. Keep `master.enc` with your encrypted tokens; losing it or forgetting the password
+requires enrolling your tokens again.
 
 Fine-grained tokens belong to the user who created them. Operations are attributed to that user, and the token can
 remain valid after a Mint session ends. Mint checks repository access on each launch. If the token is expired or
@@ -74,6 +78,9 @@ Mint does not use or delete GitHub App keys from older configurations. The old `
 `key_file` path remains only to deny its directory to Copilot's built-in file tools. Remove the field and old key
 yourself once nothing else uses it. Mint uses your normal Copilot home (`COPILOT_HOME` if set, otherwise Copilot's
 default); normal launches do not edit its settings.
+
+Mint uses a compact, numbered terminal interface with a green accent and hidden secret prompts. Styling is built
+in, with no added dependencies. Redirected output, `NO_COLOR`, `CLICOLOR=0`, and `TERM=dumb` use plain text.
 
 Configuration and encrypted per-repository tokens stay in the OS user configuration directory. Tokens are stored
 under its `tokens` subdirectory:

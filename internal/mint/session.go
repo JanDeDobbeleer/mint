@@ -94,8 +94,7 @@ func (s session) runWithToken(ctx context.Context, token string) error {
 	cmd.Stdin = s.stdin
 	cmd.Stdout = s.stdout
 	cmd.Stderr = s.stderr
-	if _, err := fmt.Fprintf(s.stderr, "mint: %s/%s; repository token validated; sandbox requested\n",
-		s.repo.Owner, s.repo.Name); err != nil {
+	if err := newTerminalUI(s.stderr).status("+", "Token validated. Launching Copilot (sandbox requested).\n"); err != nil {
 		return errors.New("cannot report launch status")
 	}
 	return s.execute(cmd)
