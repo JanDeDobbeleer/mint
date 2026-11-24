@@ -1,6 +1,8 @@
 package vault
 
 import (
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"slices"
@@ -81,8 +83,19 @@ func validatePEM(value string) error {
 	if block == nil || len(strings.TrimSpace(string(rest))) != 0 {
 		return errors.New("expected exactly one PEM block")
 	}
-	if !strings.HasSuffix(block.Type, "PRIVATE KEY") {
-		return errors.New("expected a PEM private key")
+	// GitHub Apps sign their JSON Web Tokens with RS256, so only an RSA key is useful here.
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		if _, err := x509.ParsePKCS1PrivateKey(block.Bytes); err != nil {
+			return errors.New("cannot parse the RSA private key")
+		}
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if _, isRSA := key.(*rsa.PrivateKey); err != nil || !isRSA {
+			return errors.New("expected an RSA private key")
+		}
+	default:
+		return errors.New("expected an RSA private key")
 	}
 	return nil
 }

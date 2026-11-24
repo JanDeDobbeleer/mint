@@ -22,7 +22,10 @@ const help = `mint supplies a per-repository fine-grained GitHub token to sandbo
 Usage:
   mint setup
   mint setup [options]
+  mint creds add|list|rm [NAME]
   mint [COPILOT ARGUMENTS...]
+
+Credentials: 'mint creds --help' manages named credentials in the encrypted vault.
 
 Setup options:
   --remote NAME       Git remote to scope against (default: origin)
@@ -56,6 +59,9 @@ func Run(ctx context.Context, args []string, _ string, stdin io.Reader, stdout, 
 	prompts := terminalPrompter{stdin: stdin, stderr: stderr}
 	if len(args) > 0 && args[0] == "setup" {
 		return setup(ctx, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "creds" {
+		return runCreds(args[1:], stdin, stdout, stderr)
 	}
 	if err := copilot.CheckLaunchArgs(args); err != nil {
 		return err

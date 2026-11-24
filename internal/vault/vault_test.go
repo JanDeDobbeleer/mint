@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -480,13 +481,23 @@ func TestSpecChecks(t *testing.T) {
 	require.Error(t, appKey.Check("-----BEGIN PRIVATE KEY-----\nnot base64!\n-----END PRIVATE KEY-----"))
 	require.Error(t, appKey.Check(key+key), "exactly one block")
 	require.Error(t, appKey.Check("plain text"))
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	pkcs1 := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(rsaKey)}))
+	require.NoError(t, appKey.Check(pkcs1), "GitHub offers PKCS#1 keys")
+	require.Error(t, appKey.Check("-----BEGIN RSA PRIVATE KEY-----\nbm90IGEga2V5\n-----END RSA PRIVATE KEY-----"), "base64 that is not a key")
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	ecDER, err := x509.MarshalPKCS8PrivateKey(ecKey)
+	require.NoError(t, err)
+	require.Error(t, appKey.Check(string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: ecDER}))), "App JWTs need RSA")
 	certificate := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("x")}))
 	require.Error(t, appKey.Check(certificate), "only private keys")
 }
 
 func testPEM(t *testing.T) string {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 	der, err := x509.MarshalPKCS8PrivateKey(key)
 	require.NoError(t, err)

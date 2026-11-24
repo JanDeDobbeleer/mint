@@ -81,6 +81,14 @@ own runners; gh-aw and Actions-hosted execution are out of scope.
 
 ## M1. Extract interfaces without behaviour change
 
+**Status: done.** Deviations from the text below: the environment allowlist lives in `internal/hostenv` (the Copilot adapter
+needs it for its own probes, and an agent package must not import a runtime); `AgentInfo`, `RuntimeInfo`, `Command`,
+`SessionResult` and `AgentOutcome` live in `internal/core` to avoid an import cycle; `RuntimeInfo` carries the workspace
+and inherited environment because the Copilot preflight needs them; `RepoConfigPolicy` already drives the project
+settings scan (design 12 planned that for M5); `Agent.ParseResult` fails closed with `errors.ErrUnsupported` until M4;
+the policy compiler is still M3. The `--sync-session`, `--session-id`, `--max-ai-credits` and `--output-format` flag
+names are checked by an opt-in test against the installed CLI (`MINT_TEST_COPILOT`), not assumed.
+
 **Goal**: introduce `core`, `agent`, `runtime` and move Copilot and Windows-sandbox specifics behind them.
 
 **Tasks**
@@ -106,6 +114,11 @@ own runners; gh-aw and Actions-hosted execution are out of scope.
 ---
 
 ## M2. Vault and credentials
+
+**Status: done.** Deviations: the vault root is the config directory itself (not a `vault/` subdirectory), so existing
+`master.enc` and `tokens/` files stay valid; named credentials are in `credentials/<name>.enc`. `mint creds list` and `rm`
+need no unlock. The per-use HKDF key is `Vault.StateSigningKey` (info `mint:state-hmac:v1`). `github-operator-pat` can be
+stored but the interactive launcher still uses per-repository tokens.
 
 **Goal**: named encrypted credentials unlocked once; no secret values in flags.
 
