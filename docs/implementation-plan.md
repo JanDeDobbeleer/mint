@@ -8,7 +8,14 @@ actor on `main` and no agent ever holds a GitHub token (Mint always pushes).
 
 ## Rules for the executing session
 
-- Work on a feature branch per milestone. Do not open a PR unless asked. Commit with Conventional Commits (CI runs
+- **Delivery flow.** `daemon` is the long-lived integration branch for all daemon work (it started as a copy of
+  `claude/zealous-carson-m2zlqt`; the name `next` is avoided because design 5.5 uses `next` for the nightly branch).
+  Branch each milestone (or each reviewable slice of one) from `daemon` as `feat/daemon-<slice>`, open a PR with base
+  `daemon`, and stop for review. Never push to `daemon` or `main` directly. Stack a dependent slice on the previous
+  slice branch (base = that branch) and retarget it to `daemon` once the earlier PR merges. Merge into `daemon` with a
+  merge commit, not squash, so stacked branches stay valid. When the operator says the daemon is ready, a single PR
+  `daemon` to `main` ships it; keep `daemon` merged up with `main` meanwhile. Record each milestone's status and any
+  deviation in this file in the same PR. Commit with Conventional Commits (CI runs
   commitlint): `feat(core): ...`, `refactor(session): ...`, `docs: ...`, `test: ...`.
 - The interactive `mint` command and `mint setup` must keep working and keep their tests green at every commit. Milestone
   1 is behaviour-preserving.
@@ -357,9 +364,10 @@ start in parallel with M4's later tasks once the Windows Docker tests are done. 
 
 ## Starting prompt for the implementation session
 
-> You are implementing the Mint daemon in the repository `JanDeDobbeleer/mint`. Work on a new branch created from
-> `claude/zealous-carson-m2zlqt` (it contains the design); do not push to any other existing branch and do not open a
-> pull request unless I ask.
+> You are implementing the Mint daemon in the repository `JanDeDobbeleer/mint`. Work on a branch created from `daemon`
+> (the integration branch; it contains the design) and open a pull request with base `daemon` for each milestone or
+> slice, following the delivery flow in "Rules for the executing session". Do not push to `daemon`, `main` or any other
+> existing branch.
 >
 > **Read first, in this order:** `docs/design.md` (v2, the source of truth), `docs/implementation-plan.md` (milestones and
 > the "Rules for the executing session"), `docs/research-spikes.md` (status of each spike), then the findings in
