@@ -1,0 +1,258 @@
+# Implementation plan
+
+Read [design.md](design.md) first, and [research-spikes.md](research-spikes.md) for the open questions. This plan is
+written so a fresh session can execute it milestone by milestone. **Milestone 0 (spikes) can change later milestones;
+update this file when a spike decision lands.**
+
+## Rules for the executing session
+
+- Work on a feature branch per milestone. Do not open a PR unless asked. Commit with Conventional Commits (CI runs
+  commitlint): `feat(core): ...`, `refactor(session): ...`, `docs: ...`, `test: ...`.
+- The interactive `mint` command and `mint setup` must keep working and keep their tests green at every commit. Milestone
+  1 is behaviour-preserving.
+- Checks before every commit (from the README):
+  `modernize ./...`, `fieldalignment ./...`, `go test ./...`, `go vet ./...`, `golangci-lint run`, and
+  `go build -trimpath -o mint.exe .`. CI also runs on Windows and macOS: no Unix-only code without build tags.
+- Go 1.27.4. Avoid new dependencies; each one needs a stated reason in the commit message. `go.yaml.in/yaml/v3` is
+  already an indirect dependency and is the expected YAML library.
+- Tests use local HTTP servers (`httptest`) and helper subprocesses, never live GitHub or Copilot. Follow the existing
+  style in `internal/mint/*_test.go`. Every extension point (Source, Runtime, Agent, Action) gets a reusable
+  conformance test.
+- Never log, print, or put secrets in errors. Add a test whenever a new type holds a secret.
+- Keep repo-owned inputs (`.mint/*`) read from the default branch only (design principle 2).
+- Prefer small interfaces defined where they are consumed. No Copilot-specific names outside `internal/agent/copilot`
+  and `internal/runtime/hostsandbox` after Milestone 1.
+
+## Where today's code lives (for refactors)
+
+| File | Responsibility | Destination |
+|---|---|---|
+| `internal/mint/cli.go` | `Run`, `setup`, launch orchestration | stays as CLI wiring; calls new packages |
+| `internal/mint/session.go` | `runWithToken`, `childEnvironment`, `checkSandboxCredentials`, `projectConfiguration`, `checkCopilot`, `checkLaunchArgs` | split: env filtering and project-config checks to `internal/runtime/hostsandbox`; Copilot launch/version/policy to `internal/agent/copilot` |
+| `internal/mint/sandbox_config.go` | `applySandboxSettings` | `internal/agent/copilot` (policy compiler) |
+| `internal/mint/token_store.go`, `master_password.go` | PBKDF2 + AES-GCM store, master password | `internal/vault` (generalized to named credentials) |
+| `internal/mint/github.go` | token validation, HTTP client | `internal/source/github` + a shared client |
+| `internal/mint/repository.go` | remote parsing, `protectPaths` | `internal/core` + runtime |
+| `internal/mint/git-instructions.md` | Copilot session instructions | stays with the Copilot agent package |
+| `internal/mint/ui*.go`, `prompt.go` | terminal UI and hidden prompts | unchanged |
+
+## Target package layout
+
+```
+main.go
+internal/mint/            CLI wiring (setup, interactive launch, run, serve, image, creds, status)
+internal/core/            Event, Identity, ThreadRef, Policy, Secret, Outcome, errors
+internal/config/          mint.yaml loader, validation, reload
+internal/vault/           encrypted named credentials, unlock sources
+internal/identity/        GitHub App JWT + installation tokens; PAT provider
+internal/proxy/           injecting TLS forward proxy
+internal/flow/            engine, stages, hooks, budgets, state-comment codec (HMAC)
+internal/action/          checks, git.push, github.* actions
+internal/router/          verification, dedupe, sender->project, triggers
+internal/source/          Source interface + github/ (email/, whatsapp/ later), cron/
+internal/runtime/         Runtime interface + docker/, hostsandbox/
+internal/agent/           Agent interface + copilot/ (claude/ later)
+internal/imagebuild/      .mint/Dockerfile build, hash, update, prune
+```
+
+---
+
+## M0. Spikes (blocking decisions)
+
+Run S0 first; then S1 to S5 in parallel. See [research-spikes.md](research-spikes.md).
+
+**Done when**: each spike has `docs/spikes/S<n>-*.md` with a decision, and `design.md` (sections 5.2, 6.1, 7, 15) and
+this plan are updated. If S0 says "adopt gh-aw", stop and re-scope with the maintainer before M1.
+
+---
+
+## M1. Extract interfaces without behaviour change
+
+**Goal**: introduce `core`, `agent`, `runtime` and move Copilot and Windows-sandbox specifics behind them.
+
+**Tasks**
+1. Create `internal/core` with `Policy`, `Identity`, `ThreadRef`, `Event`, `Outcome`, and `Secret`
+   (redacting `String`, `GoString`, `Format`, `MarshalJSON`, `MarshalText`, zeroize on `Destroy`).
+2. Define `agent.Agent` and `runtime.Runtime` (design 4.2). Implement `agent/copilot` (version check, args builder with
+   `--sandbox`, `--disable-builtin-mcps`, `--secret-env-vars`, deny-tool flags, instruction injection, policy compile,
+   `CredentialEnv`) and `runtime/hostsandbox` (env allowlist, isolated `GH_CONFIG_DIR`, project settings checks, MCP
+   disablement, process launch with TTY passthrough).
+3. Rewire `Run` in `cli.go` to call the interactive path through these packages.
+4. Move tests with the code; keep all existing assertions.
+
+**Acceptance**
+- `go test ./...` passes with no deleted or weakened assertions; byte-for-byte same child environment and args in the
+  existing session tests.
+- `grep -ri copilot internal/ --include=*.go -l` lists only `internal/agent/copilot`, `internal/runtime/hostsandbox`,
+  tests, and CLI wiring.
+- New `Secret` tests: never appears via `fmt` verbs (`%v %+v %#v %s %q`), `json`, `slog`, or error wrapping.
+
+---
+
+## M2. Vault and credentials
+
+**Goal**: named encrypted credentials unlocked once; no secret values in flags.
+
+**Tasks**
+1. Generalize `token_store.go` into `internal/vault`: store key in `master.enc`, per-credential files with associated
+   data bound to credential name (and repo for repo tokens). Keep the file format backward compatible with existing
+   `MINTPAT1` tokens (migration test).
+2. Unlock sources: hidden prompt (default), `--password-stdin`. Reject any flag that would carry a secret value.
+3. `mint creds add|list|rm <name>` with hidden prompts. `list` shows names and metadata only.
+4. Derive an HMAC key from the vault with HKDF for state signing (used in M4).
+
+**Acceptance**: existing token-store tests pass unchanged; wrong password never replaces data; `mint creds` prints no
+secret; fuzz or table tests for tamper detection (wrong associated data fails).
+
+---
+
+## M3. Operator configuration and policy model
+
+**Goal**: `mint.yaml` with projects, senders, triggers, flows, agent profiles, sandbox profiles; generic `Policy`
+compilers.
+
+**Tasks**
+1. `internal/config`: strict YAML decode (unknown keys error), validation (references resolve, no secrets, no
+   forbidden fields), version field, error messages with paths.
+2. Dynamic reload with a validation gate: a bad file keeps the last good config and reports the error.
+3. Policy compilers: Copilot (`sandbox.userPolicy`, `injectHosts`, `allowLocalNetwork`) in `agent/copilot`; Docker
+   (mounts, tmpfs, limits, allowed hosts for the proxy) stubbed with tests in `runtime/docker`.
+4. Reject, at load time, any secret-looking value (high-entropy token patterns, `ghp_`, `github_pat_`, PEM blocks).
+
+**Acceptance**: golden tests for config decode and compile; reload tests; secret-pattern rejection tests.
+
+---
+
+## M4. Flow engine, PR state, and `mint run`
+
+**Goal**: execute `issue-to-pr` once against a real or fake GitHub using the host sandbox runtime and a PAT. First
+usable end-to-end milestone.
+
+**Tasks**
+1. `internal/flow`: stage graph, outcomes, budgets, hooks, retries with bounded loops, cancellation, idempotent stage
+   execution. Engine uses only interfaces.
+2. State-comment codec: hidden marker plus signed JSON (HMAC from M2). Verify author and signature on read. Property tests
+   for tamper detection and size limits.
+3. GitHub client: issues, PRs (draft), comments (create/update), labels, refs (atomic branch create as claim), reviews,
+   check runs, ETag support. Extract from `github.go`; keep redirect refusal and validation behaviour.
+4. Actions: `checks` (run commands in the runtime; feed failures back to the agent), `git.push` (using the
+   `--config-env` header pattern from `git-instructions.md`, no token in remote URLs), `github.open-pr`
+   (state comment, trailers), `comment`.
+5. Workspace manager: shallow clone of the PR/default branch into a per-run directory, per-run agent home, cleanup.
+6. Prompt rendering: issue and comment text quoted as untrusted data in a fixed template; unit tests that injected
+   text cannot close the quote block.
+7. `mint run <issue>`: runs `issue-to-pr` with the Copilot agent on the host-sandbox runtime (docker comes in M5).
+8. Fakes for tests: fake GitHub (`httptest`), fake agent helper subprocess, fake runtime.
+
+**Acceptance**: with fakes, a full run produces branch, commits with trailers, draft PR, signed state comment; killing
+the process mid-stage and re-running resumes from the checkpoint; a tampered state comment is rejected; `checks`
+failure feeds output to the agent and stops at `max`.
+
+---
+
+## M5. Docker runtime, session image, and proxy
+
+**Goal**: container sessions with injected scoped credentials. Depends on S3 and S4 decisions.
+
+**Tasks**
+1. `internal/imagebuild`: `.mint/Dockerfile` read from the default branch via the API or a clean checkout; content hash;
+   approval record (stored in operator config dir, keyed by repo + hash); `mint image build|update|prune`; tags
+   `mint/<owner>-<repo>:<hash>`; `--pull` on update; label images with run metadata.
+2. `runtime/docker`: start containers with the hardening flags (design 7.1), workspace volume, per-run agent home mount,
+   labels for orphan cleanup, wall-clock kill, log capture. Reject any repo-provided `runArgs`/mounts.
+3. `internal/proxy`: injecting forward proxy with per-session CA, host allowlist, credential injection per
+   `Policy.Credentials`, no secrets in logs, tests for bypass attempts and header stripping.
+4. `mint-base` image definition (Dockerfile in `build/`) and docs for deriving from it; agent CLI install step.
+5. Egress enforcement per S3 (internal network + sidecar, or the chosen design).
+
+**Acceptance**: integration test (skipped without Docker) proves: placeholder token only in the container, push and PR
+creation succeed via the proxy, a request to a non-allowed host fails, container cannot see host paths other than
+workspace and agent home, `--cap-drop` and read-only root are in effect; an orphan sweep removes leaked containers.
+
+---
+
+## M6. GitHub source, router, App identity, `mint serve`
+
+**Goal**: the daemon reacts to GitHub activity end to end.
+
+**Tasks**
+1. `internal/identity`: GitHub App JWT signing (stdlib), installation tokens narrowed per repo and permission set,
+   revocation, expiry-aware cache; PAT provider for `mint run`.
+2. `source/github`: poll issues/PRs/reviews/comments with ETags; emit `Event`s with `Verified` set from the authenticated
+   API; optional webhook receiver later.
+3. `internal/router`: dedupe by `Event.ID` (in-memory plus GitHub-side markers), sender→project→trust tier, trigger
+   matching, loop prevention (ignore Mint's own events), operator-listed approvers only.
+4. Flows `pr-feedback` and `pr-approved`; `github.request-review`, `github.merge` (match head SHA, require checks,
+   honour branch protection).
+5. Reconciler: on start and each tick, list open PRs with Mint markers and stage != done, resume them.
+6. `mint serve`: unlock vault once, concurrency caps, graceful shutdown (stop dispatch, checkpoint, kill, revoke
+   tokens), structured logs, `mint status`.
+7. Budgets and `mint:stop`.
+
+**Acceptance**: with a fake GitHub, issue → PR → changes-requested review → fix → re-review request → approval → merge,
+including a daemon restart between every step; stale approval (new push) does not merge; events by the bot itself do not
+retrigger; two daemons cannot claim the same issue.
+
+---
+
+## M7. Cron trigger and nightly `next` integration
+
+**Tasks**: cron source (timezone aware, in-process scheduler); actions `github.collect-prs`, `git.integrate`,
+`github.open-pr` for `next`, `wait: checks_green` with timeout, `github.dispatch-workflow` (optional); date-keyed
+idempotency; conflict handling per S8.
+
+**Acceptance**: dry run with a fake GitHub and real git repos: three approved PRs, one conflicting → `next` contains two,
+conflicting PR gets a comment, merge happens only when checks are green, a second fire the same day is a no-op.
+
+---
+
+## M8. Windows host runtime for the daemon, `runs-on`
+
+**Tasks**: concurrency cap 1; Job Objects for process-tree kill; per-run Copilot home written with the compiled policy;
+trust gate (trusted senders only, plan approval by default); `runs-on` resolution from project config and labels with
+operator allowlist; Windows CI coverage for the new code paths.
+
+**Acceptance**: unit tests for selection logic (label alone cannot escalate); Windows CI job runs the host runtime tests
+with a fake Copilot executable; documented manual test for real sandbox denial (S7).
+
+---
+
+## M9. Extensibility proof
+
+**Tasks**: add an `email` source skeleton and a `claude` agent skeleton, both behind the registries, with the shared
+conformance suites and no core changes (any needed core change is a design bug: fix the design). Write
+`docs/extending.md`. Optionally a build tag that omits Copilot to prove removability.
+
+**Acceptance**: `go build` and tests pass with the Copilot packages excluded by build tag; the email skeleton passes the
+Source conformance tests using a fake mailbox.
+
+---
+
+## M10. Hardening and release
+
+**Tasks**: threat-model tests (prompt-injection fixtures, forged approvals, tampered state, proxy bypass, devcontainer
+`runArgs` rejection, Dockerfile hash change requires approval); budget enforcement tests; log redaction test over all
+packages; README and `docs/` updates (new commands, config reference, security notes); release pipeline updated to
+include any new assets (for example the `mint-base` image); update `SECURITY.md`.
+
+**Acceptance**: all checks green on Windows, macOS, and Linux CI; a documented manual end-to-end walkthrough on
+Windows with Docker Desktop.
+
+---
+
+## Dependency order
+
+```
+M0 ─► M1 ─► M2 ─► M3 ─► M4 ─► M5 ─┬─► M6 ─► M7
+                                  └─► M8
+                                       M6 ─► M9 ─► M10
+```
+
+M2 and M3 can overlap after M1. M5 can start in parallel with M4's later tasks once S3/S4 are decided.
+
+## Starting prompt for the implementation session
+
+> Read `docs/design.md`, `docs/research-spikes.md`, and `docs/implementation-plan.md` in this repository. Do Milestone 0
+> first: write the spike findings under `docs/spikes/` (start with S0 and S1) and update the design and plan with the
+> decisions. Do not begin Milestone 1 until I confirm the S0 decision. Follow the "Rules for the executing session"
+> section. Work on a new branch, commit with Conventional Commits, and do not open a pull request unless I ask.
