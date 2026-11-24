@@ -1,8 +1,3 @@
-> **Superseded in part (later decision):** Mint does not use a GitHub App; it uses the operator's own fine-grained PATs
-> by role (design 7.3, spike S5 in research-spikes.md). The installation-token, JWT, narrowing, revocation and App
-> permission-matrix sections below no longer apply. The rate-limit, merge-semantics, ruleset, comment and `next`
-> findings still do, with PAT in place of installation token.
-
 # Spikes S5, S6, S8: GitHub platform behaviour
 
 Date: 2026-11-24. Scope: GitHub App identity (S5), PR state comment / HMAC / reconciliation cost (S6), nightly `next`

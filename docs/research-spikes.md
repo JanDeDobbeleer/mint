@@ -19,7 +19,7 @@ excerpts and raw repository sources and carry VERIFIED / INFERRED / UNVERIFIED l
 | S1/S2 Copilot CLI, ACP | `spikes/S1-S2-copilot-cli.md` | `-p` plus allowlist (no `--allow-all-tools` needed); Mint-chosen `--session-id`; sentinel `result.json`; ACP deferred | hands-on T1 to T11 |
 | S3 Docker | `spikes/S3-S4-docker-and-proxy.md` | `docker` CLI via `os/exec`; SDK deferred; `--internal` network plus Mint sidecar | Windows and Docker Desktop checklist |
 | S4 proxy | same | hybrid proxy (MITM only on credentialed hosts); prototype works on Linux against a fake upstream | real GitHub and Copilot traffic; Windows |
-| S5 GitHub identity (PATs; App route dropped) | `spikes/S5-S6-S8-github-platform.md` | operator account with fine-grained PATs by role; approval by label; D-1 closed: the operator account merges `next`, no agent ever holds a GitHub token | tests T1 to T17 |
+| S5 GitHub App identity and token minting | `spikes/S5-S6-S8-github-platform.md` | App for all roles (installation tokens narrowed per use, revoked after); native review approval; D-1 closed: the App is a `main` bypass actor, no agent ever holds a GitHub token | tests T1 to T17 |
 | S6 state comment | same | numeric-id author check plus HMAC with `seq`; 8 KB budget | codec prototype and property tests (code) |
 | S7 Windows host sandbox | none | none | hands-on only |
 | S8 `next` integration | same as S5 | merge commit of head SHAs; recheck heads | T13 dry run |
@@ -119,28 +119,25 @@ from a container holding only a dummy token; a negative test showing exfil to a 
 
 ---
 
-## S5. GitHub identity with scoped PATs (the GitHub App route was dropped)
+## S5. GitHub App identity and token minting
 
-**Decision made**: no GitHub App and no machine user. Mint uses the operator's own fine-grained PATs, split by role
-(design 7.3); approval is an explicit label signal (design 5.5).
-The App-specific research in `spikes/S5-S6-S8-github-platform.md` (installation tokens, JWT signing, narrowing,
-revocation) is superseded; its rate-limit, merge-semantics, ruleset, and comment findings still apply.
+**Decision made**: a personal GitHub App, installed only on the operator's repos, is the identity for all roles
+(design 7.3). Mint always pushes; the agent holds no GitHub credential. Approval is GitHub's native review.
 
 **Questions**
-- Minimal fine-grained permission sets per role (orchestrator, push, merge); use `X-Accepted-GitHub-Permissions`; confirm
-  a PAT limited to selected repos behaves as expected on a personal repo.
-- Label approval: is the `labeled` timeline event's actor and `created_at` reliable and fast to observe (ETag/events
-  API vs timeline)? Race between a push and label observation; confirm label removal on head change works.
-- Mint's PRs authored by the operator: confirm the Approve button is unavailable and what review states the operator
-  can submit on their own PR (comment only).
-- Merge into protected `main` by the operator PAT: owner/admin bypass versus ruleset user-bypass (May 2026 changelog) on
-  a personal repo; audit-log visibility.
-- Do PAT-authored pushes, PRs and merges trigger Actions workflows? Does the PR need "approve and run workflows"?
-- Rate limits shared across one account's PATs; ETag behaviour with stable tokens; secondary limits.
-- PAT expiry limits and reminder flow; whether an expired PAT yields a distinguishable 401.
+- Creating a personal GitHub App; permissions per role (contents, pull requests, issues, checks, workflows, actions).
+- JWT signing in Go (stdlib), installation token minting with `repositories` and `permissions` narrowing, revocation,
+  rate limits.
+- Can the operator approve an App-authored PR, and can the App merge it under branch protection? Does the review's
+  `commit_id` reliably identify the approved head, and do stale approvals get dismissed?
+- Rulesets: the App as a bypass actor on `main` only; restrict-updates for `mint/*` and `next` with an operator admin
+  bypass.
+- Do pushes with an App token trigger Actions workflows (they do for App tokens, unlike `GITHUB_TOKEN`)? Confirm for the
+  repos involved, including oh-my-posh. Does a bot-authored PR need "approve and run workflows"?
+- Webhooks versus polling; ETag-based polling cost and ETag stability across token rotation.
 
-**Exit criteria**: a scratch personal repo with three fine-grained PATs: label-approval flow with stale-approval removal,
-a bypass or owner merge into a protected `main`, and the permission probes recorded.
+**Exit criteria**: a scratch repo with the App: mint a one-repo token, push a branch, open a draft PR, request review,
+have the operator approve it natively, merge into a protected `main` as a bypass actor, and revoke the token.
 
 ---
 
