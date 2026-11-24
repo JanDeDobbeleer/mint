@@ -633,7 +633,7 @@ malicious code pushed to a branch (rulesets, review), unknown Copilot unattended
 
 ## 15. Open questions
 
-0. Copilot terms for unattended or multi-user use of a seat, and `COPILOT_GITHUB_TOKEN` licensing. Docs endorse CI and
+1. Copilot terms for unattended or multi-user use of a seat, and `COPILOT_GITHUB_TOKEN` licensing. Docs endorse CI and
    headless use with env tokens; the terms text was not reached. A human must read it. Also Anthropic's terms for
    subscription tokens in an unattended service, and WhatsApp AI-provider terms.
 2. Whether `--internal` networks on Docker Desktop block the host gateway and external DNS (S3, Windows test).
