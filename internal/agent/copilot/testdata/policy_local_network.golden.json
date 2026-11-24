@@ -1,0 +1,28 @@
+{
+  "sandbox": {
+    "credentials": {
+      "envVars": {
+        "COPILOT_GITHUB_TOKEN": {
+          "injectHosts": [
+            "api.github.com",
+            "api.githubcopilot.com"
+          ]
+        }
+      }
+    },
+    "enabled": true,
+    "userPolicy": {
+      "network": {
+        "allowLocalNetwork": true,
+        "allowedHosts": [
+          "api.github.com",
+          "api.githubcopilot.com",
+          "github.com"
+        ],
+        "blockedHosts": [
+          "uploads.github.com"
+        ]
+      }
+    }
+  }
+}

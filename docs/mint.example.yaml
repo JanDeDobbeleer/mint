@@ -1,0 +1,139 @@
+# Example operator configuration for the Mint daemon (<config dir>/mint.yaml).
+# The configuration tests load this file, so it always matches the schema.
+#
+# This file names things and sets policy. It never holds a secret: credentials are referenced by their vault
+# name (see `mint creds list`). A value that looks like a token or a key is rejected when the file loads.
+version: 1
+
+limits:
+  max_concurrent_runs: 2
+  per_runtime:
+    windows-sandbox: 1
+  per_project:
+    acme-api: 1
+  per_repo: 1
+
+stall_timeout: 5m
+retry:
+  base_delay: 10s
+  max_delay: 5m
+  max_attempts: 5
+
+# Add to or override the built-in bundles (github, go, node, python, copilot).
+network_bundles:
+  internal-registry:
+    - registry.example.com
+
+sandboxes:
+  # "default" and "readonly" exist without being listed; define them to change them.
+  build:
+    network:
+      bundles: [github, copilot, go]
+      allowed_hosts: [registry.example.com]
+      blocked_hosts: [uploads.github.com]
+    filesystem:
+      readwrite: [/var/cache/build]
+    limits:
+      cpus: 2
+      memory_mb: 4096
+      pids: 512
+      wall_clock: 45m
+
+agents:
+  analyst:
+    adapter: copilot
+    model: example-model
+    prompt: analyze
+    sandbox: readonly
+    tools: [read]
+  coder:
+    adapter: copilot
+    model: example-model
+    prompt: implement
+    sandbox: build
+    tools: [read, write, "shell(git:*)", "shell(go:*)"]
+    args: [--yolo]
+    fallback: analyst
+  fixer:
+    adapter: copilot
+    model: example-model
+    prompt: address-review
+    resume: true
+    credential: copilot-token
+
+hooks:
+  after_stage:
+    command: [pwsh, -NoProfile, -File, C:\mint\hooks\after-stage.ps1]
+    timeout: 30s
+
+output:
+  max: { comment: 5, open-pr: 1, label: 3 }
+  targets: [run-thread, run-branch]
+  label_allow: ["mint:*", bug, enhancement]
+  label_block: ["release*"]
+  protected_paths: [.github/workflows, .mint]
+  max_patch_bytes: 1048576
+
+projects:
+  acme-api:
+    repo: github.com/me/acme-api
+    runs_on: container
+    sandbox: build
+    staged: true
+    senders:
+      - { match: "github:me", trust: maintainer }
+      - { match: "email:cto@acme.example", trust: customer }
+    checks:
+      - { name: test, command: [go, test, ./...] }
+      - { name: vet, command: [go, vet, ./...] }
+    integration:
+      strategy: merge
+      approvers: [me]
+      interval: 10m
+      method: squash
+      where: { draft: false, base: main, not_labeled: hold, checks_green: true }
+  windows-tool:
+    repo: github.com/me/windows-tool
+    runs_on: windows-sandbox
+    senders:
+      - { match: "github:me", trust: maintainer }
+    integration:
+      strategy: next-branch
+      approvers: [me]
+      schedule: "0 5 * * *"
+      tz: Europe/Brussels
+
+triggers:
+  - { source: github, kind: issue, label: mint, project: auto }
+  - { source: github, kind: pr_comment, mention: "@mint", project: auto }
+  - { source: email, to: support@me.example, project: by-sender }
+
+flows:
+  issue-to-pr:
+    on: { source: github, kind: issue, label: mint }
+    stages:
+      analyze: { agent: analyst, next: implement }
+      implement: { agent: coder, next: verify }
+      verify:
+        action: checks
+        on_fail: { retry: implement, max: 2 }
+        next: publish
+      publish: { action: github.open-pr }
+  pr-feedback:
+    on: { source: github, kind: pr_review, state: changes_requested, from: [me], run: existing }
+    stages:
+      fix: { agent: fixer, next: verify }
+      verify:
+        action: checks
+        on_fail: { retry: fix, max: 2 }
+        next: push
+      push: { action: git.push, next: rerequest }
+      rerequest: { action: github.request-review, with: { from: me } }
+  nightly-next:
+    on: { schedule: "0 5 * * *", tz: Europe/Brussels }
+    stages:
+      collect: { action: github.collect-prs, next: build }
+      build: { action: git.integrate, with: { branch: next, from: main, on_conflict: skip-and-comment }, next: pr }
+      pr: { action: github.open-pr, with: { head: next, base: main }, next: ci }
+      ci: { wait: checks_green, timeout: 90m, on_fail: notify, next: merge }
+      merge: { action: github.merge, with: { method: merge, recheck_heads: "true" } }

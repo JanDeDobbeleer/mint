@@ -1,0 +1,14 @@
+--cap-drop=ALL
+--security-opt=no-new-privileges
+--read-only
+--pids-limit=128
+--memory=2048m
+--tmpfs=/tmp:rw,noexec,nosuid,size=256m
+--cpus=1.5
+--tmpfs=/home/agent/.cache:rw,nosuid,size=256m
+--tmpfs=/var/cache/build:rw,nosuid,size=256m
+--
+api.github.com,github.com
+uploads.github.com
+45m0s
+5m0s
