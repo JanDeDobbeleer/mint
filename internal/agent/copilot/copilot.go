@@ -109,9 +109,6 @@ func (a *Agent) Command(req agent.AgentRequest) (core.Command, error) {
 	if req.Resume && req.SessionID == "" {
 		return core.Command{}, errors.New("resuming requires an explicit session ID")
 	}
-	if req.SessionID != "" && strings.ContainsAny(req.SessionID, " \t\r\n\x00=,") {
-		return core.Command{}, errors.New("invalid session ID")
-	}
 	if req.MaxCost != 0 && req.MaxCost < MinimumAICredits {
 		return core.Command{}, fmt.Errorf("--max-ai-credits must be at least %d", MinimumAICredits)
 	}
