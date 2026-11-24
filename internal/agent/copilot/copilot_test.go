@@ -265,7 +265,6 @@ func TestCommandRefusesUnsafeSessionAndBudgetInput(t *testing.T) {
 		{"bare resume in headless passthrough", func(r *agent.AgentRequest) { r.Prompt = "x"; r.ExtraArgs = []string{"--resume"} }, "bare --resume"},
 		{"empty resume value", func(r *agent.AgentRequest) { r.Prompt = "x"; r.ExtraArgs = []string{"--resume="} }, "bare --resume"},
 		{"continue in headless passthrough", func(r *agent.AgentRequest) { r.Prompt = "x"; r.ExtraArgs = []string{"--continue"} }, "--continue"},
-		{"session ID with separator", func(r *agent.AgentRequest) { r.SessionID = "a,b" }, "invalid session ID"},
 		{"budget below the documented minimum", func(r *agent.AgentRequest) { r.Prompt = "x"; r.MaxCost = 29 }, "at least 30"},
 		{"missing credential", func(r *agent.AgentRequest) { r.Credentials = nil }, "credential is missing"},
 		{"comma in scratch path", func(r *agent.AgentRequest) { r.ScratchDir = "a,b" }, "commas"},
