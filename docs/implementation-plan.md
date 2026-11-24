@@ -3,8 +3,8 @@
 Read [design.md](design.md) first (v2, which incorporates the documentation research in [spikes/](spikes/)), and
 [research-spikes.md](research-spikes.md) for the status of each spike and the hands-on tests still required. This plan
 is written so a fresh session can execute it milestone by milestone. **The hands-on tests in M0 can still change later
-milestones; update this file when a decision lands.** Decision D-1 (design 5.5, the nightly `next` merge) must be made by
-the operator before M7.
+milestones; update this file when a decision lands.** Decision D-1 (design 5.5) is closed: Mint's App is a bypass
+actor on `main` and `next-branch` requires `push: mint`.
 
 ## Rules for the executing session
 
@@ -71,7 +71,7 @@ real tools, listed per spike in the spike files and summarized in [research-spik
 - A scratch repo with a GitHub App: tests T1 to T17 in `S5-S6-S8-github-platform.md` (token narrowing, ETag stability,
   merge and ruleset behaviour, claim race, `next` dry run).
 - S7 (Windows host sandbox, headless).
-- Operator decision D-1 and a read of the Copilot unattended-use terms.
+- A read of the Copilot unattended-use terms (and, for confirmation, test T6/T13 on ruleset bypass behaviour).
 
 **Done when**: each hands-on result is recorded in its spike file with a decision, and `design.md` (sections 5.2, 6.1,
 7, 15) and this plan are updated. M1 and M2 do not depend on these results and may start first. Mint always runs its
@@ -225,14 +225,17 @@ workspace and agent home, `--cap-drop` and read-only root are in effect; an orph
 **Tasks**
 1. `internal/identity`: GitHub App JWT signing (stdlib), installation tokens narrowed per repo and permission set,
    `DELETE /installation/token` at run end, expiry margin, tolerant token format (no length assumptions), the three
-   tokens of design 7.3 including the short-lived merge token, and the separate merger App if D-1 is accepted; PAT
+   tokens of design 7.3 including the short-lived merge token, and an optional separate merger App (`integration.app: merger`) required only
+   with `push: agent`; PAT
    provider for `mint run`. Tests for narrowing (repos and permissions in the request body).
 2. `source/github`: reconcile through repo-wide `issues/comments?since`, the open-PR list, and the label list, all
    conditional; no per-PR polling; search only for cross-repo discovery within a 30/min budget; emit `Event`s with
    `Verified` set from the authenticated API, including `ci_completed` and `run_failed`; optional webhook receiver later.
 3. `internal/router`: dedupe by `Event.ID` (in-memory plus GitHub-side markers), sender→project→trust tier, trigger
    matching, loop prevention (ignore Mint's own events), operator-listed approvers only.
-4. Flows `pr-feedback` and `pr-approved`; `github.request-review`, `github.merge` (match head SHA, require checks,
+4. Flow `pr-feedback`; the `integration.strategy: merge` watcher (interval tick; collect approved PRs by listed
+   approvers on the current head SHA; config validation that a strategy is exclusive and mandatory when enabled);
+   `github.request-review`, `github.merge` (match head SHA, require checks,
    honour branch protection).
 5. Reconciler: on start and each tick, list open PRs with Mint markers and stage != done, resume them; each tick also
    refreshes running Runs (design 5.6: closed/merged stops and cleans, unlabelled/`mint:stop`/stale approval stops and
@@ -249,7 +252,8 @@ retrigger; two daemons cannot claim the same issue.
 
 ## M7. Cron trigger and nightly `next` integration
 
-**Prerequisite**: operator decision D-1 (design 5.5) and the S8 dry run (T13).
+**Prerequisite**: the S8 dry run (T13) and a ruleset with Mint's App as bypass actor on `main` in a scratch repo.
+Config validation rejects `strategy: next-branch` with `push: agent` unless a separate merger App is configured.
 
 **Tasks**: cron source (timezone aware, in-process scheduler); actions `github.collect-prs` (records PR and head SHA
 pairs), `git.integrate` (true merges of head SHAs, resume by recorded `next` tip), `github.open-pr` for `next`,
@@ -331,7 +335,7 @@ M1 ─► M2 ─► M3 ─► M4 ─► M5 ─┬─► M6 ─► M7
 ```
 
 M1 and M2 do not depend on the hands-on results and can start immediately; M2 and M3 can overlap after M1. M5 can
-start in parallel with M4's later tasks once the Windows Docker tests are done. M7 needs decision D-1.
+start in parallel with M4's later tasks once the Windows Docker tests are done. M7 needs the S8 dry run.
 
 ## Starting prompt for the implementation session
 
@@ -340,6 +344,6 @@ start in parallel with M4's later tasks once the Windows Docker tests are done. 
 > Workflows (Mint always runs its own runners). Start with M1 (behaviour-preserving extraction of the `Agent` and
 > `Runtime` interfaces) and M2 (vault and `Secret` type), which do not depend on the pending hands-on tests. Where a
 > design statement is marked [U] it is unverified: add a test or a version gate instead of assuming it. Do not begin M4
-> or later until the operator confirms the M0 hands-on results, and do not begin M7 until decision D-1 is made. Follow
+> or later until the operator confirms the M0 hands-on results, and do not begin M7 until the S8 dry run (T13) has been done. Follow
 > the "Rules for the executing session" section. Work on a new branch, commit with Conventional Commits, and do not
 > open a pull request unless asked.

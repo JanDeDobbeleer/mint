@@ -19,7 +19,7 @@ excerpts and raw repository sources and carry VERIFIED / INFERRED / UNVERIFIED l
 | S1/S2 Copilot CLI, ACP | `spikes/S1-S2-copilot-cli.md` | `-p` plus allowlist (no `--allow-all-tools` needed); Mint-chosen `--session-id`; sentinel `result.json`; ACP deferred | hands-on T1 to T11 |
 | S3 Docker | `spikes/S3-S4-docker-and-proxy.md` | `docker` CLI via `os/exec`; SDK deferred; `--internal` network plus Mint sidecar | Windows and Docker Desktop checklist |
 | S4 proxy | same | hybrid proxy (MITM only on credentialed hosts); prototype works on Linux against a fake upstream | real GitHub and Copilot traffic; Windows |
-| S5 GitHub App | `spikes/S5-S6-S8-github-platform.md` | three-token model; merger App recommended for `next` (decision D-1) | tests T1 to T17 |
+| S5 GitHub App | `spikes/S5-S6-S8-github-platform.md` | three-token model; D-1 closed: Mint's App is a `main` bypass actor, `next-branch` requires `push: mint` | tests T1 to T17 |
 | S6 state comment | same | numeric-id author check plus HMAC with `seq`; 8 KB budget | codec prototype and property tests (code) |
 | S7 Windows host sandbox | none | none | hands-on only |
 | S8 `next` integration | same as S5 | merge commit of head SHAs; recheck heads | T13 dry run |

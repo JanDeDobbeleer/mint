@@ -73,6 +73,7 @@ execution and GitHub Agentic Workflows are out of scope.
 | Docker is driven through the `docker` CLI via `os/exec` behind an interface; the Go SDK is deferred | `github.com/docker/docker` is deprecated; `moby/moby/client` is v0.x, pre-1.0, adds ~78 packages and ~8 MB [V]. |
 | Hybrid TLS proxy: MITM and credential injection only on credentialed hosts, opaque CONNECT tunnels for other allowed hosts | Smallest interception surface. Prototype worked with git, gh, node, curl (S4). |
 | Flow engine with typed stages (agent / action / wait) | Analyze, implement, simplify, test, publish, review loop, nightly integration share one shape. |
+| Integration is a per-project strategy, `merge` (interval watcher) or `next-branch` (nightly), and is the only merge path; the gate is the original PR, with no approver on the `next` PR | Everything flowing into `next` was already approved; Mint's App is a `main` bypass actor, safe because under `push: mint` no agent holds its token (D-1 closed). A GitHub merge queue is not used: it is unavailable on personal-account repos. |
 | First source after GitHub is email over IMAP, read-only first | No public endpoint, durable mailbox queue, lowest onboarding cost (S9). |
 
 ## 4. Architecture
@@ -236,29 +237,51 @@ input.
       verify:    { action: checks, on_fail: { retry: fix, max: 2 }, next: push }
       push:      { action: git.push, next: rerequest }
       rerequest: { action: github.request-review, from: [<operator>] }
-  pr-approved:
-    on: { source: github, kind: pr_review, state: approved, from: [<operator>], run: existing }
-    stages:
-      merge: { action: github.merge, method: squash,
-               require: [head_sha_matches_approval, checks_green] }
 ```
 
 PRs opened by others can start a different flow (an AI review, or nothing) through trigger conditions such as
 `author:`. `github.merge` is a flow action and is never agent-requestable.
 
-Guards: approval authority is operator-defined (listed identities, current head SHA; a new push invalidates it);
-events authored by Mint's own identity are ignored; iterations per Run are capped; branch protection stays on. The
-merge uses a short-lived *merge token* (section 7.3) minted at merge time.
+Approval does not trigger a per-PR merge flow. Merging is owned by the project's **integration strategy** (5.5), which
+is the only path by which Mint merges anything.
 
-### 5.5 Flow: nightly `next` integration
+Guards: approval authority is operator-defined (listed identities, current head SHA; a new push invalidates it);
+events authored by Mint's own identity are ignored; iterations per Run are capped; branch protection stays on.
+
+### 5.5 Integration strategies: `merge` and `next-branch`
+
+Merging is a per-project setting. When a project enables a strategy, **every approved PR goes through it**, and Mint
+merges nothing outside it. The gate is always the **original pull request**: approved by an operator-listed
+approver on its current head SHA, not a draft, mergeable, and green. Nothing later in the pipeline asks for another
+approver.
+
+```yaml
+projects:
+  acme-api:
+    integration:
+      strategy: merge              # merge | next-branch | off
+      approvers: [<operator>]
+      where: { draft: false, base: main, not_labeled: hold, checks_green: true }
+      # strategy: merge
+      interval: 10m                # how often to look for approved PRs
+      method: squash
+      # strategy: next-branch
+      schedule: "0 5 * * *"
+      tz: Europe/Brussels
+```
+
+**`merge`**: on every `interval` tick, collect PRs (any PR, not only Mint's) that satisfy the gate and merge each one
+with the merge token, passing the approved head SHA so a push after approval cannot slip through. Ordering is oldest
+approval first.
+
+**`next-branch`**: a scheduled flow that collects the same set once, integrates it onto a branch, and merges that
+branch:
 
 ```yaml
   nightly-next:
     on: { schedule: "0 5 * * *", tz: Europe/Brussels }
     stages:
-      collect: { action: github.collect-prs,       # records (PR, head SHA) pairs
-                 where: { approved_by: [<operator>], head_matches_approval: true, draft: false,
-                          base: main, not_labeled: hold }, next: build }
+      collect: { action: github.collect-prs, next: build }          # records (PR, head SHA) pairs
       build:   { action: git.integrate, branch: next, from: main,
                  strategy: sequential-merge, on_conflict: skip-and-comment, next: pr }
       pr:      { action: github.open-pr, head: next, base: main, next: ci }
@@ -267,26 +290,29 @@ merge uses a short-lived *merge token* (section 7.3) minted at merge time.
 ```
 
 - `next` is rebuilt from `main` each night and force-pushed; only Mint's identity should be able to update it.
+- **No approver on the `next` PR.** Everything flowing in was already gated at its own PR, so the `next` → `main`
+  merge is trusted by construction. The final merge still waits for the required checks on `next` to be green.
 - Each source head SHA is merged with a true merge into `next`, and `next` reaches `main` with a **merge commit**
   (not squash or rebase). GitHub counts a PR as merged when its head is reachable from the base, so the source PRs
   flip to merged [V]; squash and rebase do not flip them [V]. Prerequisites: merge commits allowed and no
   linear-history rule on `main`.
-- A PR that receives a push after `next` was built does not flip and stays open; it is excluded by the final head
-  re-check (`recheck_heads`).
-- Because merging via `next` bypasses each source PR's own protections, the pre-merge re-verification of approval,
-  head SHA, and checks is mandatory.
+- A PR that receives a push after `next` was built does not flip and stays open; the final head re-check
+  (`recheck_heads`) excludes it, or aborts and rebuilds if the excluded PR breaks the build.
+- Because this merge skips each source PR's own protections, the pre-merge re-verification of approval, head SHA, and
+  checks at collect time and again just before the merge is mandatory.
 - Conflicting PRs are excluded with a comment. An optional `resolve-conflicts` agent stage is future work.
 - Mint does not create releases. Merging to `main` triggers the repo's release workflow (App-token pushes and merges
   do trigger workflows, unlike `GITHUB_TOKEN` [V]); optionally a `github.dispatch-workflow` action.
 - The nightly Run is keyed by date (`next-YYYY-MM-DD` marker on its PR), so a double fire is a no-op.
 
-**Open decision D-1 (needs the operator):** how the `next` → `main` merge satisfies `main`'s required reviews without
-"Mint never bypasses". Rulesets target the base ref, so "no reviews required when head is `next`" is likely not
-expressible [I]. Options: (a) operator approves the nightly `next` PR (breaks unattended); (b) make Mint's App a
-bypass actor on `main` (rejected: the agent token shares the App identity, so it could merge anything); (c) **a second,
-separate "merger" GitHub App** that is the only bypass actor on `main`, whose key lives only in the vault and whose
-token is minted by the orchestrator at merge time and never reaches an agent. Recommendation: (c), pending hands-on
-tests T6 and T13.
+**How `next` reaches a protected `main` (decision D-1, closed).** `main` keeps its protections; Mint's App is a
+**bypass actor on `main`** and merges the `next` PR as the orchestrator. This is acceptable because under the default
+`push: mint` the agent session holds no credential of that App at all: only Mint's own code ever uses the merge token.
+The configuration validator therefore enforces: `strategy: next-branch` requires `push: mint`. With `push: agent` the
+agent would hold a token of the bypass App, so config load fails unless a separate merger App credential is configured
+(`integration.app: merger`) that never reaches an agent. The remaining risk is a bug in Mint's merge action, which is
+why the collect-time and pre-merge re-verification and the audit comment on each merged source PR are mandatory.
+Test T6/T13 still confirm the ruleset behaviour (bypass visible in the audit log, required checks on `next` enforced).
 
 ### 5.6 Operations: scheduling, retries, stalls, reconciliation
 
@@ -455,10 +481,10 @@ Claude Code sandbox does not exist on native Windows; the runtime refuses Claude
   - *Push token*: Contents write + Pull requests write, one repo, held by Mint's `git.push`/`open-pr` actions (and
     given to the agent only with `push: agent`).
   - *Merge token*: short-lived, one repo, Contents + Pull requests write, minted at merge time and used within the
-    step. For the nightly `next` → `main` merge see decision D-1 (separate merger App).
+    step. Also used by the `merge` strategy per PR and by the `next-branch` merge, where the App is a bypass actor on `main` (5.5).
   - The agent session itself gets read-only access at most. Nothing is granted Administration, Workflows, secrets, or
     members. Rulesets cannot restrict an App to `mint/*` and `next` by actor, so the enforceable controls are: no
-    bypass for the agent's App on `main`, required PR/reviews/checks on `main`, optional restrict-creations/updates
+    no bypass for any App token an agent can hold (the orchestrator's bypass on `main` is used only by Mint's merge action), required PR/reviews/checks on `main`, optional restrict-creations/updates
     rulesets on other refs with an operator admin bypass, and no `workflows` permission. Push rulesets (path rules)
     exist only on private/internal repos.
 - **Proxy (hybrid mode)**: a Mint-written Go forward proxy (stdlib `crypto/tls` and `net/http`; `goproxy` is the
@@ -572,7 +598,7 @@ last good config). A repo prompt changing under a running Run takes effect at th
 |---|---|---|
 | Root credentials (App keys, PAT, Copilot token) | exfiltration by agent or repo code | vault + `Secret` type; never in child env; proxy injection; per-session derived tokens; agent session has no write credential by default |
 | Host filesystem and user profile | agent or build escapes | container isolation (caps dropped, non-root, read-only root, no Docker socket, no host mounts except agent home); Windows runtime only for trusted work |
-| Repository | malicious push, workflow tampering | Mint validates and pushes; protected paths (`.github/workflows/`, `.mint/`); no `workflows` permission; rulesets; branch protection; human-gated merge; agent's App has no bypass on `main` |
+| Repository | malicious push, workflow tampering | Mint validates and pushes; protected paths (`.github/workflows/`, `.mint/`); no `workflows` permission; rulesets; branch protection; merge only through the project's integration strategy, gated at the original PR; Mint's App is a `main` bypass actor used only by Mint's merge action, and `next-branch` requires `push: mint` so no agent ever holds that App's token |
 | Run state | tampering with the state comment | author check by numeric id + HMAC with `seq` |
 | Prompt injection via issues, PRs, email | agent follows attacker instructions | untrusted-data quoting and input sanitization; trust tiers; egress allowlist; no secrets in the sandbox; typed output requests; optional judge; read-only token for low trust; outbound messages drafted for approval; staged mode |
 | Approvals | forged or stale approval triggers merge | operator-listed identities; head-SHA match; ignore Mint's own events; branch protection retained; pre-merge re-verification for `next` |
@@ -607,23 +633,21 @@ malicious code pushed to a branch (rulesets, review), unknown Copilot unattended
 
 ## 15. Open questions
 
-1. **D-1** (section 5.5): the nightly `next` → `main` merge versus required reviews. Needs the operator's decision;
-   recommendation is a separate merger App.
-2. Copilot terms for unattended or multi-user use of a seat, and `COPILOT_GITHUB_TOKEN` licensing. Docs endorse CI and
+0. Copilot terms for unattended or multi-user use of a seat, and `COPILOT_GITHUB_TOKEN` licensing. Docs endorse CI and
    headless use with env tokens; the terms text was not reached. A human must read it. Also Anthropic's terms for
    subscription tokens in an unattended service, and WhatsApp AI-provider terms.
-3. Whether `--internal` networks on Docker Desktop block the host gateway and external DNS (S3, Windows test).
-4. Copilot behaviour with a missing session on `--resume`, `--output-format json` event schema, exit codes, and
+2. Whether `--internal` networks on Docker Desktop block the host gateway and external DNS (S3, Windows test).
+3. Copilot behaviour with a missing session on `--resume`, `--output-format json` event schema, exit codes, and
    per-run usage reporting (S1 hands-on tests).
-5. Whether a placeholder `COPILOT_GITHUB_TOKEN` and model-endpoint proxying (`HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`)
+4. Whether a placeholder `COPILOT_GITHUB_TOKEN` and model-endpoint proxying (`HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`)
    work outside the Copilot sandbox.
-6. `allowLocalNetwork` and project-configuration key names for the Copilot sandbox on the installed version.
-7. ETag stability across token rotation; bot-authored PR workflow-approval gate; per-endpoint App permission mapping;
+5. `allowLocalNetwork` and project-configuration key names for the Copilot sandbox on the installed version.
+6. ETag stability across token rotation; bot-authored PR workflow-approval gate; per-endpoint App permission mapping;
    who can edit or delete others' comments; sharing of rate limits between installation tokens (S5/S6 tests T1 to T17).
-8. Gmail/Graph backend choice if the operator's mailbox lacks IMAP; Meta business-verification requirements and
+7. Gmail/Graph backend choice if the operator's mailbox lacks IMAP; Meta business-verification requirements and
    pricing; Graph subscription lifetimes.
-9. "Update" scope: this design treats it as session-image refresh; Mint's own binary already updates via AppInstaller.
-10. `go.yaml.in/yaml/v3` (already an indirect dependency) for `mint.yaml`.
+8. "Update" scope: this design treats it as session-image refresh; Mint's own binary already updates via AppInstaller.
+9. `go.yaml.in/yaml/v3` (already an indirect dependency) for `mint.yaml`.
 
 ## 16. Prior art and what we borrow
 
