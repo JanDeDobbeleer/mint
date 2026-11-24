@@ -344,11 +344,35 @@ start in parallel with M4's later tasks once the Windows Docker tests are done. 
 
 ## Starting prompt for the implementation session
 
-> Read `docs/design.md` (v2), `docs/research-spikes.md`, `docs/implementation-plan.md`, and the files in
-> `docs/spikes/`. The documentation research is finished; do not redo it and do not evaluate or adopt GitHub Agentic
-> Workflows (Mint always runs its own runners). Start with M1 (behaviour-preserving extraction of the `Agent` and
-> `Runtime` interfaces) and M2 (vault and `Secret` type), which do not depend on the pending hands-on tests. Where a
-> design statement is marked [U] it is unverified: add a test or a version gate instead of assuming it. Do not begin M4
-> or later until the operator confirms the M0 hands-on results, and do not begin M7 until the S8 dry run (T13) has been done. Follow
-> the "Rules for the executing session" section. Work on a new branch, commit with Conventional Commits, and do not
-> open a pull request unless asked.
+> You are implementing the Mint daemon in the repository `JanDeDobbeleer/mint`. Work on a new branch created from
+> `claude/zealous-carson-m2zlqt` (it contains the design); do not push to any other existing branch and do not open a
+> pull request unless I ask.
+>
+> **Read first, in this order:** `docs/design.md` (v2, the source of truth), `docs/implementation-plan.md` (milestones and
+> the "Rules for the executing session"), `docs/research-spikes.md` (status of each spike), then the findings in
+> `docs/spikes/`. The documentation research is finished: do not redo it, and do not evaluate or adopt GitHub Agentic
+> Workflows or a merge queue (Mint always runs its own runners and uses the `merge` / `next-branch` strategies).
+>
+> **Settled decisions you must not reopen:** GitHub App identity for all roles with per-use installation tokens; Mint
+> always pushes and the agent never holds a GitHub credential; approval is GitHub's native review on the current head SHA;
+> integration is a per-project strategy (`merge` or `next-branch`) and is the only merge path; GitHub is the only durable
+> state (a signed state comment on the PR), with no run database; the Copilot session ID is stored in that comment and
+> resumed locally on one Windows machine (no cross-machine resume); Docker containers are the default runtime and the
+> Windows host sandbox is for Copilot only; the first source after GitHub is email over IMAP; secrets are never in
+> config files or flag values.
+>
+> **Do now:** Milestone M1 (behaviour-preserving extraction of the `Agent`, `Runtime` and `Secret`/`Policy` types out of
+> `internal/mint/session.go` and friends), then M2 (vault with named credentials and a runtime write path, `mint creds`).
+> Neither depends on the pending hands-on tests. Keep every existing test passing with its assertions unchanged. Stop
+> after M2 and summarise what you did, what you could not verify, and any design statement that turned out to be wrong.
+>
+> **Do not start** M3 onward until I confirm, and do not start M4 or later until the hands-on tests in M0 have been run
+> (Copilot CLI T1 to T11, Docker Desktop on Windows, the GitHub App scratch-repo tests T1 to T17). Where the design marks
+> something `[U]` (unverified), add a test or a version gate instead of assuming it.
+>
+> **Conventions:** Go 1.27.4; Conventional Commits (CI runs commitlint); before each commit run `modernize ./...`,
+> `fieldalignment ./...`, `go test ./...`, `go vet ./...`, `golangci-lint run`, and
+> `go build -trimpath -o mint.exe .`; keep Windows, macOS and Linux building (no Unix-only code without build tags); no new
+> dependencies without a reason in the commit message; never log or print secrets and add a test for every new
+> secret-holding type; tests use `httptest` servers and helper subprocesses, never live GitHub or Copilot. Commit in
+> small steps and push the branch when each milestone is done.
