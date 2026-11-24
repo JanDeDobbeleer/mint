@@ -102,9 +102,14 @@ func (a *Agent) Command(req agent.AgentRequest) (core.Command, error) {
 	}
 	headless := req.Prompt != ""
 	if headless {
-		if err := rejectSessionPicker(req.ExtraArgs); err != nil {
-			return core.Command{}, err
+		for _, list := range [][]string{req.ConfigArgs, req.ExtraArgs} {
+			if err := rejectSessionPicker(list); err != nil {
+				return core.Command{}, err
+			}
 		}
+	}
+	if err := CheckLaunchArgs(req.ConfigArgs); err != nil {
+		return core.Command{}, fmt.Errorf("configured agent arguments: %w", err)
 	}
 	if req.Resume && req.SessionID == "" {
 		return core.Command{}, errors.New("resuming requires an explicit session ID")
@@ -157,6 +162,7 @@ func (a *Agent) Command(req agent.AgentRequest) (core.Command, error) {
 			args = append(args, list.flag+"="+item)
 		}
 	}
+	args = append(args, req.ConfigArgs...)
 	args = append(args, req.ExtraArgs...)
 
 	return core.Command{
