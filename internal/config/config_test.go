@@ -19,11 +19,8 @@ func loadExample(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile(examplePath)
 	require.NoError(t, err)
-	// Windows checkouts convert line endings; the snippets in these tests use 
-.
-	return strings.ReplaceAll(string(data), "
-", "
-")
+	// Windows checkouts convert line endings; the snippets in these tests use LF.
+	return strings.ReplaceAll(string(data), "\r\n", "\n")
 }
 
 func parse(t *testing.T, text string) (*Config, error) {
