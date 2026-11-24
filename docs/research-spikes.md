@@ -19,7 +19,7 @@ excerpts and raw repository sources and carry VERIFIED / INFERRED / UNVERIFIED l
 | S1/S2 Copilot CLI, ACP | `spikes/S1-S2-copilot-cli.md` | `-p` plus allowlist (no `--allow-all-tools` needed); Mint-chosen `--session-id`; sentinel `result.json`; ACP deferred | hands-on T1 to T11 |
 | S3 Docker | `spikes/S3-S4-docker-and-proxy.md` | `docker` CLI via `os/exec`; SDK deferred; `--internal` network plus Mint sidecar | Windows and Docker Desktop checklist |
 | S4 proxy | same | hybrid proxy (MITM only on credentialed hosts); prototype works on Linux against a fake upstream | real GitHub and Copilot traffic; Windows |
-| S5 GitHub App | `spikes/S5-S6-S8-github-platform.md` | three-token model; D-1 closed: Mint's App is a `main` bypass actor, `next-branch` requires `push: mint` | tests T1 to T17 |
+| S5 GitHub identity (PATs; App route dropped) | `spikes/S5-S6-S8-github-platform.md` | machine-user account with PATs by role; D-1 closed: the merge account is a `main` bypass actor, `next-branch` requires `push: mint`; fine-grained PATs do not work for collaborators on personal repos | tests T1 to T17 |
 | S6 state comment | same | numeric-id author check plus HMAC with `seq`; 8 KB budget | codec prototype and property tests (code) |
 | S7 Windows host sandbox | none | none | hands-on only |
 | S8 `next` integration | same as S5 | merge commit of head SHAs; recheck heads | T13 dry run |
@@ -119,21 +119,28 @@ from a container holding only a dummy token; a negative test showing exfil to a 
 
 ---
 
-## S5. GitHub App identity and token minting
+## S5. GitHub identity with scoped PATs (the GitHub App route was dropped)
+
+**Decision made**: no GitHub App. Mint acts as a dedicated machine-user account with PATs split by role (design 7.3).
+The App-specific research in `spikes/S5-S6-S8-github-platform.md` (installation tokens, JWT signing, narrowing,
+revocation) is superseded; its rate-limit, merge-semantics, ruleset, and comment findings still apply.
 
 **Questions**
-- Creating a personal GitHub App; permissions per flow (contents, pull requests, issues, checks, workflows, actions).
-- JWT signing in Go (stdlib), installation token minting with `repositories` and `permissions` narrowing, revocation,
-  rate limits.
-- Can the app approve/merge? PR author = bot means the operator can approve; confirm branch protection and required
-  reviews behave. Can the app request the operator's review?
-- Rulesets: restrict the app to pushing `mint/*` and `next`, deny default-branch pushes; bypass lists.
-- Do pushes with an App token trigger Actions workflows (they do for App tokens, unlike `GITHUB_TOKEN`)? Confirm for the
-  repos involved, including oh-my-posh.
-- Webhooks versus polling for events; ETag-based polling cost.
+- Can the machine user's fine-grained PAT reach repos in an org (org setting "Allow access via fine-grained personal
+  access tokens", approval policy)? Confirm it cannot reach a personal-account repo as a collaborator, and whether a
+  classic PAT scoped by collaborator membership is acceptable for those repos.
+- Minimal permission sets per role (orchestrator, push, merge) for fine-grained PATs; use `X-Accepted-GitHub-Permissions`.
+- Self-approval: confirm the operator can approve a PR authored by the machine user, and that the review-required rule
+  counts it.
+- Ruleset bypass for an individual user on a personal-account repo (May 2026 changelog), and audit-log visibility.
+- Do PAT-authored pushes, PRs and merges trigger Actions workflows? Does a bot-authored PR need "approve and run
+  workflows"?
+- Rate limits shared across one account's PATs; ETag behaviour with a stable token; secondary limits.
+- PAT expiry limits and a reminder flow; whether an expired PAT yields a distinguishable 401.
+- Rulesets: restrict-updates with admin bypass for `mint/*` and `next`; push rulesets exist only on private/internal repos.
 
-**Exit criteria**: Go prototype that mints a one-repo token, pushes a branch, opens a draft PR, requests review, and
-revokes the token.
+**Exit criteria**: scratch repos (one personal, one in an org) with a machine user; run the permission probes, a PR
+authored by the machine user approved by the operator, and a bypass merge into a protected `main`.
 
 ---
 

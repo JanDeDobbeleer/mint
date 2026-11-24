@@ -64,7 +64,7 @@ execution and GitHub Agentic Workflows are out of scope.
 | Decision | Reason |
 |---|---|
 | Docker container is the default session boundary; Copilot sandbox is the Windows-host option | One boundary independent of the agent CLI. |
-| GitHub App (bot) identity for the daemon; PAT only for `mint run` and interactive | A PAT-authored PR is authored by the operator, who then cannot approve it. App tokens are short-lived and per-repo. |
+| A dedicated machine-user GitHub account with scoped PATs; **no GitHub App** | PRs authored by a distinct identity so the operator can approve them and Mint can ignore its own events. PATs are what the operator already creates. Limits: no per-session minting; fine-grained PATs do not work for a collaborator on another user's repo, so personal repos need a classic PAT scoped by collaborator membership. |
 | No run store; PR state comment + branch name + commit trailers | The trigger always results in a PR, so GitHub already holds the record. |
 | Copilot session ID is chosen by Mint (`--session-id <uuid>`), stored in the state comment before launch; resume is primary, context reconstruction the fallback | Documented flag [V]; removes ID discovery. |
 | Credentials never in config; encrypted vault unlocked once; secret values are never accepted as flag values | Flags choose a *source* (prompt, stdin); values in argv leak via process lists and history. |
@@ -73,7 +73,7 @@ execution and GitHub Agentic Workflows are out of scope.
 | Docker is driven through the `docker` CLI via `os/exec` behind an interface; the Go SDK is deferred | `github.com/docker/docker` is deprecated; `moby/moby/client` is v0.x, pre-1.0, adds ~78 packages and ~8 MB [V]. |
 | Hybrid TLS proxy: MITM and credential injection only on credentialed hosts, opaque CONNECT tunnels for other allowed hosts | Smallest interception surface. Prototype worked with git, gh, node, curl (S4). |
 | Flow engine with typed stages (agent / action / wait) | Analyze, implement, simplify, test, publish, review loop, nightly integration share one shape. |
-| Integration is a per-project strategy, `merge` (interval watcher) or `next-branch` (nightly), and is the only merge path; the gate is the original PR, with no approver on the `next` PR | Everything flowing into `next` was already approved; Mint's App is a `main` bypass actor, safe because under `push: mint` no agent holds its token (D-1 closed). A GitHub merge queue is not used: it is unavailable on personal-account repos. |
+| Integration is a per-project strategy, `merge` (interval watcher) or `next-branch` (nightly), and is the only merge path; the gate is the original PR, with no approver on the `next` PR | Everything flowing into `next` was already approved; the merge account is a `main` bypass actor, safe because under `push: mint` no agent holds its token (D-1 closed). A GitHub merge queue is not used: it is unavailable on personal-account repos. |
 | First source after GitHub is email over IMAP, read-only first | No public endpoint, durable mailbox queue, lowest onboarding cost (S9). |
 
 ## 4. Architecture
@@ -301,18 +301,21 @@ branch:
 - Because this merge skips each source PR's own protections, the pre-merge re-verification of approval, head SHA, and
   checks at collect time and again just before the merge is mandatory.
 - Conflicting PRs are excluded with a comment. An optional `resolve-conflicts` agent stage is future work.
-- Mint does not create releases. Merging to `main` triggers the repo's release workflow (App-token pushes and merges
+- Mint does not create releases. Merging to `main` triggers the repo's release workflow (PAT pushes and merges
   do trigger workflows, unlike `GITHUB_TOKEN` [V]); optionally a `github.dispatch-workflow` action.
 - The nightly Run is keyed by date (`next-YYYY-MM-DD` marker on its PR), so a double fire is a no-op.
 
-**How `next` reaches a protected `main` (decision D-1, closed).** `main` keeps its protections; Mint's App is a
-**bypass actor on `main`** and merges the `next` PR as the orchestrator. This is acceptable because under the default
-`push: mint` the agent session holds no credential of that App at all: only Mint's own code ever uses the merge token.
-The configuration validator therefore enforces: `strategy: next-branch` requires `push: mint`. With `push: agent` the
-agent would hold a token of the bypass App, so config load fails unless a separate merger App credential is configured
-(`integration.app: merger`) that never reaches an agent. The remaining risk is a bug in Mint's merge action, which is
-why the collect-time and pre-merge re-verification and the audit comment on each merged source PR are mandatory.
-Test T6/T13 still confirm the ruleset behaviour (bypass visible in the audit log, required checks on `next` enforced).
+**How `next` reaches a protected `main` (decision D-1, closed).** `main` keeps its protections; the merge account is a
+**bypass actor on `main`** and merges the `next` PR as the orchestrator. Individual users can be repository-ruleset
+bypass actors since May 2026 [V: changelog; personal-account repos inferred, [U] confirm in the UI/API]. This is
+acceptable because under the default `push: mint` the agent session holds no credential of that account at all: only
+Mint's own code ever uses the merge PAT. The configuration validator therefore enforces: `strategy: next-branch`
+requires `push: mint`. With `push: agent` the agent would hold a token of the bypass account, so config load fails
+unless a separate merger account PAT is configured (`integration.account: merger`) that never reaches an agent. The
+remaining risk is a bug in Mint's merge action, which is why the collect-time and pre-merge re-verification and the
+audit comment on each merged source PR are mandatory. Test T6/T13 still confirm the ruleset behaviour (bypass visible
+in the audit log, required checks on `next` enforced). The no-bypass alternative is a second machine account that
+approves the `next` PR through normal protection; not chosen.
 
 ### 5.6 Operations: scheduling, retries, stalls, reconciliation
 
@@ -471,22 +474,39 @@ Claude Code sandbox does not exist on native Windows; the runtime refuses Claude
 
 ### 7.3 Credential broker and injecting proxy
 
-- The root credential lives in the vault (App private key, or an operator PAT for `mint run`). Per-session credentials
-  are derived from it: installation tokens last 1 hour and can be narrowed with `repositories` and `permissions`, never
-  beyond the App's own permissions [V]; revoked at run end (`DELETE /installation/token`). Do not assume token length
-  or shape (a stateless `ghs_APPID_JWT` format may roll out); redact by exact value.
-- **Three tokens** (per-endpoint permission mapping is unverified; confirm with `X-Accepted-GitHub-Permissions`):
-  - *Orchestrator token*: Issues write, Pull requests write, Contents read, Checks read, Commit statuses read. Polling,
+- **Identity: a dedicated machine-user account, scoped PATs, no GitHub App.** The daemon acts as its own GitHub account
+  (GitHub permits a machine account [I]) that is a collaborator only on the repos you add, so account membership is
+  part of the scope. Its PRs are authored by that account, so the operator can approve them, and events by that account
+  are recognised as Mint's own and ignored. Using the operator's own PAT remains supported for `mint run` and the
+  interactive launcher, but is **not** recommended for the daemon: GitHub blocks self-approval of one's own PR, and
+  every Mint action would be indistinguishable from the operator's.
+- **Token type depends on who owns the repo.** A fine-grained PAT (selected repositories, minimal permissions, the
+  creation flow Mint already guides with a pre-filled link) is preferred. Fine-grained PATs **cannot be used by a
+  collaborator on a repo owned by another user** [V: docs list it as unsupported], and write access to others' public
+  repos is classic-PAT only [V]. So: org-owned repos (where the org allows fine-grained PATs) use fine-grained PATs of
+  the machine user; **personal-account repos need a classic PAT** for the machine user, scoped only by the account's
+  collaborator membership, or the repos move into an org. Configure `token_type` per project and validate at start.
+- **No minting.** PATs are created by the operator, have an operator-chosen expiry (possibly org-limited), and cannot be
+  narrowed per session or revoked per run. Mitigations: roles are split across PATs (below); under `push: mint` no agent
+  holds any GitHub credential; Mint validates each PAT at start (repo access plus a permission probe), warns N days
+  before expiry, and stops dispatch on expiry or a 401. Do not assume token shape (`ghp_`, `github_pat_`); redact by
+  exact value.
+- **Three PATs by role** (per-endpoint permission mapping is unverified; confirm with `X-Accepted-GitHub-Permissions`):
+  - *Orchestrator PAT*: Issues write, Pull requests write, Contents read, Checks read, Commit statuses read. Polling,
     claiming labels, state comments, review requests. Never enters a sandbox.
-  - *Push token*: Contents write + Pull requests write, one repo, held by Mint's `git.push`/`open-pr` actions (and
-    given to the agent only with `push: agent`).
-  - *Merge token*: short-lived, one repo, Contents + Pull requests write, minted at merge time and used within the
-    step. Also used by the `merge` strategy per PR and by the `next-branch` merge, where the App is a bypass actor on `main` (5.5).
+  - *Push PAT*: Contents write + Pull requests write, held by Mint's `git.push`/`open-pr` actions (and given to the
+    agent only with `push: agent`).
+  - *Merge PAT*: Contents + Pull requests write, used by the `merge` strategy per PR and by the `next-branch` merge,
+    where its account is a bypass actor on `main` (5.5). Roles may share one account; a bypass is a property of the
+    *account*, not the token, so a classic PAT of a bypass account can also push `main` directly: keep it in the vault
+    only, never in a sandbox.
   - The agent session itself gets read-only access at most. Nothing is granted Administration, Workflows, secrets, or
-    members. Rulesets cannot restrict an App to `mint/*` and `next` by actor, so the enforceable controls are: no
-    no bypass for any App token an agent can hold (the orchestrator's bypass on `main` is used only by Mint's merge action), required PR/reviews/checks on `main`, optional restrict-creations/updates
-    rulesets on other refs with an operator admin bypass, and no `workflows` permission. Push rulesets (path rules)
-    exist only on private/internal repos.
+    members. Rulesets cannot restrict an actor to `mint/*` and `next`, so the enforceable controls are: no bypass for
+    any account whose token an agent can hold (the merge account's bypass on `main` is used only by Mint's merge action),
+    required PR/reviews/checks on `main`, optional restrict-creations/updates rulesets on other refs with an operator
+    admin bypass, and no `workflows` permission. Push rulesets (path rules) exist only on private/internal repos.
+- **Rate limits.** All PATs of one account share that account's budget (5,000 requests/hour floor [I]), so polling cost
+  scales with repos per account; ETags are stable because tokens are not rotated.
 - **Proxy (hybrid mode)**: a Mint-written Go forward proxy (stdlib `crypto/tls` and `net/http`; `goproxy` is the
   fallback if h2/websockets prove necessary). For each host in `Policy.Credentials` it does MITM and header injection;
   all other allowlisted hosts are opaque CONNECT tunnels; everything else gets 403. The per-session CA key and real
@@ -516,7 +536,7 @@ Claude Code sandbox does not exist on native Windows; the runtime refuses Claude
   blocks, high-entropy strings).
 - The vault extends the existing design: random store key in `master.enc` under the master password; separate
   encrypted files per credential (PBKDF2 + AES-GCM with associated data bound to the credential name). Named
-  credentials: `github-app-key`, `github-merger-app-key`, `github-operator-pat`, `copilot-token`,
+  credentials: `github-orchestrator-pat`, `github-push-pat`, `github-merge-pat`, `github-operator-pat`, `copilot-token`,
   `email-imap-password`, `email-oauth-refresh-token`, `email-oauth-client-secret`, `whatsapp-token`,
   `whatsapp-app-secret`, `whatsapp-verify-token`, `webhook-secret`.
 - **The vault needs a runtime write path**: OAuth refresh tokens rotate, so the unlocked daemon must atomically
@@ -596,9 +616,9 @@ last good config). A repo prompt changing under a running Run takes effect at th
 
 | Asset | Threat | Controls |
 |---|---|---|
-| Root credentials (App keys, PAT, Copilot token) | exfiltration by agent or repo code | vault + `Secret` type; never in child env; proxy injection; per-session derived tokens; agent session has no write credential by default |
+| Root credentials (PATs, Copilot token) | exfiltration by agent or repo code | vault + `Secret` type; never in child env; proxy injection only for `push: agent`; PATs split by role; expiry warnings; agent session has no GitHub credential by default |
 | Host filesystem and user profile | agent or build escapes | container isolation (caps dropped, non-root, read-only root, no Docker socket, no host mounts except agent home); Windows runtime only for trusted work |
-| Repository | malicious push, workflow tampering | Mint validates and pushes; protected paths (`.github/workflows/`, `.mint/`); no `workflows` permission; rulesets; branch protection; merge only through the project's integration strategy, gated at the original PR; Mint's App is a `main` bypass actor used only by Mint's merge action, and `next-branch` requires `push: mint` so no agent ever holds that App's token |
+| Repository | malicious push, workflow tampering | Mint validates and pushes; protected paths (`.github/workflows/`, `.mint/`); no `workflows` permission; rulesets; branch protection; merge only through the project's integration strategy, gated at the original PR; the merge account is a `main` bypass actor used only by Mint's merge action, and `next-branch` requires `push: mint` so no agent ever holds that account's token |
 | Run state | tampering with the state comment | author check by numeric id + HMAC with `seq` |
 | Prompt injection via issues, PRs, email | agent follows attacker instructions | untrusted-data quoting and input sanitization; trust tiers; egress allowlist; no secrets in the sandbox; typed output requests; optional judge; read-only token for low trust; outbound messages drafted for approval; staged mode |
 | Approvals | forged or stale approval triggers merge | operator-listed identities; head-SHA match; ignore Mint's own events; branch protection retained; pre-merge re-verification for `next` |
@@ -618,8 +638,8 @@ malicious code pushed to a branch (rulesets, review), unknown Copilot unattended
   `run_failed` event.
 - Retries and stalls follow section 5.6. A hung or failing checker, judge, or sink must not take down the daemon and is
   never read as success.
-- Graceful shutdown: stop dispatching, let stages checkpoint, kill containers and process trees (Windows Job Objects),
-  revoke installation tokens.
+- Graceful shutdown: stop dispatching, let stages checkpoint, kill containers and process trees (Windows Job Objects).
+  PATs are not revoked (they are long-lived; the operator revokes them in GitHub).
 
 ## 14. Windows specifics
 
@@ -642,8 +662,9 @@ malicious code pushed to a branch (rulesets, review), unknown Copilot unattended
 4. Whether a placeholder `COPILOT_GITHUB_TOKEN` and model-endpoint proxying (`HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`)
    work outside the Copilot sandbox.
 5. `allowLocalNetwork` and project-configuration key names for the Copilot sandbox on the installed version.
-6. ETag stability across token rotation; bot-authored PR workflow-approval gate; per-endpoint App permission mapping;
-   who can edit or delete others' comments; sharing of rate limits between installation tokens (S5/S6 tests T1 to T17).
+6. Bot-authored PR workflow-approval gate; per-endpoint PAT permission mapping; who can edit or delete others' comments;
+   whether a machine user's classic PAT is acceptable for personal repos (versus moving repos into an org so fine-grained
+   PATs work); ruleset user-bypass on personal-account repos; rate-limit sharing across one account's PATs (spike S5).
 7. Gmail/Graph backend choice if the operator's mailbox lacks IMAP; Meta business-verification requirements and
    pricing; Graph subscription lifetimes.
 8. "Update" scope: this design treats it as session-image refresh; Mint's own binary already updates via AppInstaller.
