@@ -69,7 +69,7 @@ execution and GitHub Agentic Workflows are out of scope.
 | Copilot session ID is chosen by Mint (`--session-id <uuid>`), stored in the state comment before launch; resume is primary, context reconstruction the fallback | Documented flag [V]; removes ID discovery. |
 | Credentials never in config; encrypted vault unlocked once; secret values are never accepted as flag values | Flags choose a *source* (prompt, stdin); values in argv leak via process lists and history. |
 | Credential injection by a Mint-owned proxy in a sidecar container, not by the agent CLI | Backend-independent. Copilot has `injectHosts`; Claude Code has no equivalent. |
-| **Mint pushes, the agent never does** (`push: mint` is the only mode): the agent commits locally, Mint validates the diff, then pushes with the push credential from the host side | Closes the "agent token can write directly" gap found in the prior-art review; the container holds no GitHub credential at all. Agent-side pushing (`push: agent`) is deferred until short-lived, per-repo minted tokens exist (a GitHub App would bring that back); until then PATs are too long-lived to hand to an agent. |
+| **Mint pushes, the agent never does** (not configurable): the agent commits locally, Mint validates the diff, then pushes with the push credential from the host side | Closes the "agent token can write directly" gap found in the prior-art review; the container holds no GitHub credential at all. Agent-side pushing (`push: agent`) is deferred until short-lived, per-repo minted tokens exist (a GitHub App would bring that back); until then PATs are too long-lived to hand to an agent. |
 | Docker is driven through the `docker` CLI via `os/exec` behind an interface; the Go SDK is deferred | `github.com/docker/docker` is deprecated; `moby/moby/client` is v0.x, pre-1.0, adds ~78 packages and ~8 MB [V]. |
 | Hybrid TLS proxy: MITM and credential injection only on credentialed hosts, opaque CONNECT tunnels for other allowed hosts | Smallest interception surface. Prototype worked with git, gh, node, curl (S4). |
 | Flow engine with typed stages (agent / action / wait) | Analyze, implement, simplify, test, publish, review loop, nightly integration share one shape. |
@@ -325,7 +325,7 @@ branch:
 **How `next` reaches a protected `main` (decision D-1, closed).** `main` keeps its protections; the operator account, as
 repository owner or via a ruleset bypass entry (individual users can be bypass actors since May 2026 [V: changelog;
 personal-account repos inferred, [U] confirm]), merges the `next` PR as the orchestrator. On a personal repo the owner can
-also simply not require reviews. This is acceptable because with `push: mint` (the only mode) the agent session holds no
+also simply not require reviews. This is acceptable because the agent session never holds a
 credential of that account at all: only Mint's own code ever uses the merge PAT. The remaining risk is a bug in Mint's merge action, which is why the collect-time and pre-merge re-verification and the
 audit comment on each merged source PR are mandatory. Test T6/T13 still confirm the ruleset behaviour (bypass visible
 in the audit log, required checks on `next` enforced).
@@ -366,11 +366,12 @@ Agents never perform external writes. Borrowed from gh-aw's design (prior-art re
   (`.github/workflows/`, `.mint/`, and operator-listed paths).
 - Mint sanitizes each request (neutralize @mentions and closing keywords, URLs outside the allowlist, control
   characters), runs the output checks, and only then applies it with the orchestrator token.
-- **Code reaches GitHub only via Mint** (`push: mint`, the only mode). The agent commits locally; the `git.push`
+- **Code reaches GitHub only via Mint** (this is not configurable). The agent commits locally; the `git.push`
   action validates the diff (size, protected paths, secret scan) and pushes with the push credential from the host
   side. The container holds no GitHub credential, so `gh` and authenticated `git` do not work inside it; everything the
-  agent needs from GitHub (issue text, diff, review comments) is passed in through the prompt. A future `push: agent`
-  mode would require short-lived, per-repo minted tokens (for example from a GitHub App) and is out of scope until then.
+  agent needs from GitHub (issue text, diff, review comments) is passed in through the prompt. Letting an agent
+  push would require short-lived, per-repo minted tokens (for example from a GitHub App) and a new design decision; it is
+  out of scope until then.
 - **Never agent-requestable:** merge (a flow action) and customer email (an operator-approved draft whose recipients
   are fixed by Mint).
 - **Layer 1 (always):** secret scan of patch and outputs against vault values and patterns; protected-path and size
@@ -501,7 +502,7 @@ Claude Code sandbox does not exist on native Windows; the runtime refuses Claude
   collaborator on another user's repo [V]); not chosen.
 - **No minting.** PATs are created by the operator, have an operator-chosen expiry (possibly org-limited), and cannot be
   narrowed per session or revoked per run. Mitigations: roles are split across PATs (below); no agent holds any GitHub
-  credential (`push: mint`); Mint validates each PAT at start (repo access plus a permission probe), warns N days
+  credential; Mint validates each PAT at start (repo access plus a permission probe), warns N days
   before expiry, and stops dispatch on expiry or a 401. Do not assume token shape (`ghp_`, `github_pat_`); redact by
   exact value.
 - **Three PATs by role** (per-endpoint permission mapping is unverified; confirm with `X-Accepted-GitHub-Permissions`):
@@ -521,7 +522,7 @@ Claude Code sandbox does not exist on native Windows; the runtime refuses Claude
 - **Rate limits.** All PATs of one account share that account's budget (5,000 requests/hour floor [I]), so polling cost
   scales with repos per account; ETags are stable because tokens are not rotated.
 - **Proxy**: a Mint-written Go forward proxy (stdlib `crypto/tls` and `net/http`; `goproxy` is the fallback if
-  h2/websockets prove necessary), run as the sidecar. Because no GitHub credential ever enters a session (`push: mint`),
+  h2/websockets prove necessary), run as the sidecar. Because no GitHub credential ever enters a session (Mint always pushes),
   **v1 needs no GitHub credential injection**. Its v1 job is the **egress allowlist**: allowed hosts are opaque CONNECT
   tunnels (the model endpoint, package registries, named bundles), everything else gets 403, with a per-run request log.
   The only secret a session holds is the agent CLI's own credential (Copilot `COPILOT_GITHUB_TOKEN`, or the Anthropic
@@ -530,7 +531,7 @@ Claude Code sandbox does not exist on native Windows; the runtime refuses Claude
   the agent container gets only the public certificate and a placeholder); otherwise it is passed as an env var and the
   egress allowlist limits exfiltration. The S4 prototype verified git, gh 2.89, node 22 and curl through the MITM mode
   against a fake upstream (Node needs `NODE_USE_ENV_PROXY=1`); real Copilot traffic is untested [U]. GitHub credential
-  injection returns only if a future `push: agent` mode is added.
+  injection returns only if agent-side pushing is ever added.
 - Proxy hardening: refuse requests to private, loopback, link-local and Docker gateway addresses (SSRF); pin DNS;
   overwrite any agent-supplied `Authorization`; Basic for git on `github.com`, token/Bearer for `api.github.com`;
   HTTP/1.1 on the MITM leg first; idle and total timeouts; per-run request log (host, allowed/denied) kept with the
@@ -572,7 +573,6 @@ projects:
     repo: github.com/me/acme-api
     runs-on: container          # or windows-sandbox
     sandbox: default
-    push: mint                  # only mode for now (the agent never pushes)
     staged: false
     senders:
       - { match: "github:org/maintainers", trust: maintainer }

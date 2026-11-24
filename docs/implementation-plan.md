@@ -4,7 +4,7 @@ Read [design.md](design.md) first (v2, which incorporates the documentation rese
 [research-spikes.md](research-spikes.md) for the status of each spike and the hands-on tests still required. This plan
 is written so a fresh session can execute it milestone by milestone. **The hands-on tests in M0 can still change later
 milestones; update this file when a decision lands.** Decision D-1 (design 5.5) is closed: the operator account is the bypass
-actor on `main` and no agent ever holds a GitHub token (`push: mint` is the only mode).
+actor on `main` and no agent ever holds a GitHub token (Mint always pushes).
 
 ## Rules for the executing session
 
@@ -229,7 +229,7 @@ workspace and agent home, `--cap-drop` and read-only root are in effect; an orph
    validation per PAT (repository access, a permission probe using `X-Accepted-GitHub-Permissions`); expiry tracking with
    warnings and dispatch stop on expiry or 401; no token minting. Mint's own events are recognised by signed state markers
    and `mint:*` labels, never by account (the actor is the operator). No agent-side GitHub credentials exist by
-   construction (`push: mint` is the only mode). Extend the existing PAT enrolment flow
+   construction (Mint always pushes). Extend the existing PAT enrolment flow
    (pre-filled creation link, master password) to the three roles.
 1a. Approval: implement `approval: label` (approver-applied `mint:approved`, `approved_sha` recorded in the signed state
    comment, label removed on head change, merge passes `approved_sha`) and the explicit feedback signals (review comment or
