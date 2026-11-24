@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/JanDeDobbeleer/mint/internal/agent/copilot/copilottest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -82,7 +83,7 @@ func TestSetupInitializesConfigAndAppliesSandboxPolicy(t *testing.T) {
 	command = exec.Command(git, "-C", root, "remote", "add", "origin", "https://github.com/owner/project.git")
 	require.NoError(t, command.Run())
 	t.Chdir(root)
-	binary := fakeCopilotBinary(t)
+	binary := copilottest.Binary(t)
 	binary, err = canonicalPath(binary)
 	require.NoError(t, err)
 	settingsPath := filepath.Join(base, "settings.json")

@@ -9,8 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
-	"time"
+
+	coreagent "github.com/JanDeDobbeleer/mint/internal/agent"
+	"github.com/JanDeDobbeleer/mint/internal/agent/copilot"
+	"github.com/JanDeDobbeleer/mint/internal/core"
+	rt "github.com/JanDeDobbeleer/mint/internal/runtime"
+	"github.com/JanDeDobbeleer/mint/internal/runtime/hostsandbox"
 )
 
 const help = `mint supplies a per-repository fine-grained GitHub token to sandboxed Copilot.
@@ -53,7 +57,7 @@ func Run(ctx context.Context, args []string, _ string, stdin io.Reader, stdout, 
 	if len(args) > 0 && args[0] == "setup" {
 		return setup(ctx, args[1:], stdout, stderr)
 	}
-	if err := checkLaunchArgs(args); err != nil {
+	if err := copilot.CheckLaunchArgs(args); err != nil {
 		return err
 	}
 	if home := os.Getenv("COPILOT_HOME"); home != "" && !filepath.IsAbs(home) {
@@ -71,7 +75,11 @@ func Run(ctx context.Context, args []string, _ string, stdin io.Reader, stdout, 
 	if err != nil {
 		return err
 	}
-	if _, err := projectConfiguration(repo.Root); err != nil {
+	var (
+		cop  = copilot.New(cfg.Copilot)
+		host = hostsandbox.Runtime{}
+	)
+	if _, err := hostsandbox.ProjectConfiguration(repo.Root, cop.RepoConfigPolicy()); err != nil {
 		return err
 	}
 	denied, err := protectPaths(repo, dir, cfg)
@@ -81,35 +89,52 @@ func Run(ctx context.Context, args []string, _ string, stdin io.Reader, stdout, 
 	if within(repo.Root, cfg.Copilot) {
 		return errors.New("copilot executable must be outside the working tree")
 	}
-	if err := checkCopilot(ctx, cfg.Copilot); err != nil {
-		return err
-	}
 	environ := os.Environ()
-	if err := checkSandboxCredentials(ctx, cfg.Copilot, repo.Root, environ); err != nil {
+	if err := cop.Preflight(ctx, host.Info(repo.Root, environ)); err != nil {
 		return err
 	}
-	credential, err := copilotCredential(ctx)
+	if err := host.Preflight(ctx, core.Policy{}, coreagent.Info(cop)); err != nil {
+		return err
+	}
+	credential, err := copilot.ResolveCredential(ctx)
 	if err != nil {
 		return err
 	}
+	defer credential.Destroy()
 	client := newGitHubClient()
 	gitToken, err := repositoryToken(ctx, client, dir, repo, prompts, stderr)
 	if err != nil {
 		return err
 	}
+	token := core.NewSecretString(gitToken)
+	defer token.Destroy()
 
-	return (session{
-		execute:           (*exec.Cmd).Run,
-		stdin:             stdin,
-		stdout:            stdout,
-		stderr:            stderr,
-		cfg:               cfg,
-		repo:              repo,
-		copilotCredential: credential,
-		args:              args,
-		denied:            denied,
-		environ:           environ,
-	}).runWithToken(ctx, gitToken)
+	started, err := host.Start(ctx, rt.SessionSpec{
+		Agent: cop,
+		Request: coreagent.AgentRequest{
+			Credentials: map[string]core.Secret{copilot.CredentialName: credential},
+			DeniedPaths: denied,
+			ExtraArgs:   args,
+		},
+		Stdin:  stdin,
+		Stdout: stdout,
+		Stderr: stderr,
+		BeforeLaunch: func() error {
+			if err := newTerminalUI(stderr).status("+", "Token validated. Launching Copilot (sandbox requested).\n"); err != nil {
+				return errors.New("cannot report launch status")
+			}
+			return nil
+		},
+		Dir:         repo.Root,
+		Repo:        repo.Owner + "/" + repo.Name,
+		GitHubToken: token,
+		Environ:     environ,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = started.Close() }()
+	return started.Wait()
 }
 
 func setup(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -181,7 +206,7 @@ func configureSetup(ctx context.Context, stdout, stderr io.Writer) error {
 	if err := ui.heading("Setup"); err != nil {
 		return errors.New("cannot show setup details")
 	}
-	if err := applySandboxSettings(ctx, cfg.Copilot, dir, os.Environ(), stderr); err != nil {
+	if err := copilot.ApplySandboxSettings(ctx, cfg.Copilot, dir, os.Environ(), stderr); err != nil {
 		return err
 	}
 	return ui.status("+", "Configured Copilot credential policy in your existing settings. Tool and cache grants are unchanged.")
@@ -213,7 +238,7 @@ func initializeSetup(ctx context.Context, remote, binary string, stdout, stderr 
 	if _, err := protectPaths(repo, dir, cfg); err != nil {
 		return err
 	}
-	if err := applySandboxSettings(ctx, cfg.Copilot, dir, os.Environ(), stderr); err != nil {
+	if err := copilot.ApplySandboxSettings(ctx, cfg.Copilot, dir, os.Environ(), stderr); err != nil {
 		return err
 	}
 	if err := writeConfig(dir, cfg); err != nil {
@@ -223,29 +248,4 @@ func initializeSetup(ctx context.Context, remote, binary string, stdout, stderr 
 		return err
 	}
 	return ui.status(">", "Run 'mint' from a repository checkout to add its encrypted token.")
-}
-
-func copilotCredential(ctx context.Context) (string, error) {
-	if token := os.Getenv("COPILOT_GITHUB_TOKEN"); token != "" {
-		if strings.ContainsAny(token, " \t\r\n\x00") {
-			return "", errors.New("invalid COPILOT_GITHUB_TOKEN")
-		}
-		return token, nil
-	}
-	gh, err := exec.LookPath("gh")
-	if err != nil {
-		return "", errors.New("GitHub CLI is required")
-	}
-	authCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	command := exec.CommandContext(authCtx, gh, "auth", "token", "--hostname", "github.com")
-	output, err := command.Output()
-	if err != nil {
-		return "", errors.New("cannot obtain Copilot authentication; set COPILOT_GITHUB_TOKEN or authenticate with 'gh auth login'")
-	}
-	token := strings.TrimSpace(string(output))
-	if token == "" || strings.ContainsAny(token, " \t\r\n\x00") {
-		return "", errors.New("GitHub CLI did not return a valid Copilot authentication credential")
-	}
-	return token, nil
 }
