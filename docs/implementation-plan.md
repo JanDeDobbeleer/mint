@@ -146,6 +146,14 @@ secret; fuzz or table tests for tamper detection (wrong associated data fails).
 
 ## M3. Operator configuration and policy model
 
+**Status: done (pending review).** `docs/mint.example.yaml` is the reference configuration and is loaded by the tests, so
+it can not drift from the schema. Deviations: `internal/config` takes the registered adapter and runtime names as
+`Options` instead of importing them (principle 5); `Copilot` filesystem policy is refused by `CompilePolicy` because
+the path keys are undocumented (express it as tool patterns); `allowLocalNetwork` is emitted only for a known version
+at or above `AllowLocalNetworkSince` (`MinimumVersion`, because `mint setup` already relies on it); the Docker compiler
+refuses read-only host paths and credentials in v1; the default `copilot` network bundle is UNVERIFIED and operator
+overridable. Nothing reads `mint.yaml` at runtime yet: the loader and watcher are used from M4 on.
+
 **Goal**: `mint.yaml` with projects, senders, triggers, flows, agent profiles, sandbox profiles; generic `Policy`
 compilers.
 

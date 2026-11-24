@@ -352,3 +352,97 @@ func TestCommandAppendsConfiguredArgumentsBeforePassthroughButStillGuardsTheSand
 	}))
 	require.ErrorContains(t, err, "--continue")
 }
+
+// --- policy compiler: golden files cover only the keys the documentation names ---
+
+func goldenJSON(t *testing.T, name string, value any) {
+	t.Helper()
+	got, err := json.MarshalIndent(value, "", "  ")
+	require.NoError(t, err)
+	path := filepath.Join("testdata", name)
+	if os.Getenv("MINT_UPDATE_GOLDEN") != "" {
+		require.NoError(t, os.WriteFile(path, append(got, '\n'), 0o600))
+	}
+	want, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(want), string(got))
+}
+
+func TestCompilePolicyGolden(t *testing.T) {
+	policy := core.Policy{
+		Network: core.NetPolicy{
+			AllowedHosts: []string{"github.com", "api.githubcopilot.com", "api.github.com"},
+			BlockedHosts: []string{"uploads.github.com"},
+		},
+		Credentials: map[string][]string{CredentialName: {"api.githubcopilot.com", "api.github.com"}},
+	}
+	got, err := CompilePolicy(policy, CompileOptions{})
+	require.NoError(t, err)
+	goldenJSON(t, "policy.golden.json", got)
+
+	withLocal, err := CompilePolicy(policy, CompileOptions{Version: TestedVersion, AllowLocalNetwork: true})
+	require.NoError(t, err)
+	goldenJSON(t, "policy_local_network.golden.json", withLocal)
+}
+
+func TestCompilePolicyEmitsOnlyDocumentedKeys(t *testing.T) {
+	got, err := CompilePolicy(core.Policy{
+		Network:     core.NetPolicy{AllowedHosts: []string{"github.com"}, BlockedHosts: []string{"x.example.com"}},
+		Credentials: map[string][]string{CredentialName: {"github.com"}},
+	}, CompileOptions{})
+	require.NoError(t, err)
+	sandbox := got["sandbox"].(map[string]any)
+	assert.ElementsMatch(t, []string{"enabled", "userPolicy", "credentials"}, keys(sandbox))
+	assert.Equal(t, true, sandbox["enabled"])
+	network := sandbox["userPolicy"].(map[string]any)["network"].(map[string]any)
+	assert.ElementsMatch(t, []string{"allowedHosts", "blockedHosts"}, keys(network), "allowLocalNetwork is absent unless requested")
+	vars := sandbox["credentials"].(map[string]any)["envVars"].(map[string]any)
+	assert.Equal(t, []string{"COPILOT_GITHUB_TOKEN"}, keys(vars))
+	assert.Equal(t, map[string]any{"injectHosts": []string{"github.com"}}, vars["COPILOT_GITHUB_TOKEN"])
+	assert.NotContains(t, sandbox, "allowBypass", "mint setup owns the bypass and auth keys")
+
+	minimal, err := CompilePolicy(core.Policy{}, CompileOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"sandbox": map[string]any{"enabled": true}}, minimal)
+}
+
+func keys(m map[string]any) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func TestCompilePolicyGatesUndocumentedKeysOnTheInstalledVersion(t *testing.T) {
+	for _, version := range []string{"", "garbage", "1.0.111", "1.0", "v1.0.x"} {
+		_, err := CompilePolicy(core.Policy{}, CompileOptions{Version: version, AllowLocalNetwork: true})
+		require.Error(t, err, version)
+		assert.ErrorContains(t, err, "allowLocalNetwork needs Copilot CLI")
+	}
+	for _, version := range []string{"1.0.112", "1.0.114", "v1.1.0", "2.0.0"} {
+		got, err := CompilePolicy(core.Policy{}, CompileOptions{Version: version, AllowLocalNetwork: true})
+		require.NoError(t, err, version)
+		network := got["sandbox"].(map[string]any)["userPolicy"].(map[string]any)["network"].(map[string]any)
+		assert.Equal(t, true, network["allowLocalNetwork"])
+	}
+}
+
+func TestCompilePolicyFailsClosedOnWhatItCannotExpress(t *testing.T) {
+	_, err := CompilePolicy(core.Policy{Filesystem: core.FSPolicy{ReadWrite: []string{"/x"}}}, CompileOptions{})
+	require.ErrorContains(t, err, "filesystem policy")
+	_, err = CompilePolicy(core.Policy{Credentials: map[string][]string{"webhook-secret": {"github.com"}}}, CompileOptions{})
+	require.ErrorContains(t, err, "does not read the credential")
+}
+
+func TestCompilePolicyIsDeterministic(t *testing.T) {
+	policy := core.Policy{Network: core.NetPolicy{AllowedHosts: []string{"c.example.com", "a.example.com", "b.example.com"}}}
+	first, err := CompilePolicy(policy, CompileOptions{})
+	require.NoError(t, err)
+	for range 5 {
+		again, err := CompilePolicy(policy, CompileOptions{})
+		require.NoError(t, err)
+		assert.Equal(t, first, again)
+	}
+	assert.Equal(t, []string{"c.example.com", "a.example.com", "b.example.com"}, policy.Network.AllowedHosts, "the input is not reordered")
+}
