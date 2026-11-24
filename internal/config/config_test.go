@@ -19,7 +19,11 @@ func loadExample(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile(examplePath)
 	require.NoError(t, err)
-	return string(data)
+	// Windows checkouts convert line endings; the snippets in these tests use 
+.
+	return strings.ReplaceAll(string(data), "
+", "
+")
 }
 
 func parse(t *testing.T, text string) (*Config, error) {
