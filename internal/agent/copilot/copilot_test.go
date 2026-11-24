@@ -332,3 +332,23 @@ func TestPreflightChecksVersionAndPolicyAgainstTheFakeCLI(t *testing.T) {
 	require.ErrorContains(t, New(binary).Preflight(t.Context(), rt), "sandbox.auth.git")
 	require.Error(t, New(filepath.Join(t.TempDir(), "missing")).Preflight(t.Context(), rt))
 }
+
+func TestCommandAppendsConfiguredArgumentsBeforePassthroughButStillGuardsTheSandbox(t *testing.T) {
+	cmd, err := New("copilot").Command(request(func(r *agent.AgentRequest) {
+		r.ConfigArgs = []string{"--yolo", "--effort=high"}
+		r.ExtraArgs = []string{"-s"}
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"--sandbox", "--disable-builtin-mcps", "--secret-env-vars=COPILOT_GITHUB_TOKEN",
+		"--yolo", "--effort=high", "-s"}, cmd.Args)
+
+	for _, arg := range []string{"--no-sandbox", "--sandbox=false", "--secret-env-vars=X"} {
+		_, err := New("copilot").Command(request(func(r *agent.AgentRequest) { r.ConfigArgs = []string{arg} }))
+		require.ErrorContains(t, err, "configured agent arguments", arg)
+	}
+	_, err = New("copilot").Command(request(func(r *agent.AgentRequest) {
+		r.Prompt = "x"
+		r.ConfigArgs = []string{"--continue"}
+	}))
+	require.ErrorContains(t, err, "--continue")
+}

@@ -52,7 +52,10 @@ type AgentRequest struct {
 	DisabledMCPServers []string
 	// ExtraArgs pass through unchanged after Mint own arguments (interactive use only).
 	ExtraArgs []string
-	Policy    core.Policy
+	// ConfigArgs are operator-configured flags (for example --yolo from an agent profile). They are checked against
+	// the same sandbox rules as ExtraArgs and go before them.
+	ConfigArgs []string
+	Policy     core.Policy
 	// MaxCost is the spend budget in the agent CostUnit; zero means no budget flag.
 	MaxCost    int
 	Resume     bool
