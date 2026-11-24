@@ -4,7 +4,7 @@ Read [design.md](design.md) first (v2, which incorporates the documentation rese
 [research-spikes.md](research-spikes.md) for the status of each spike and the hands-on tests still required. This plan
 is written so a fresh session can execute it milestone by milestone. **The hands-on tests in M0 can still change later
 milestones; update this file when a decision lands.** Decision D-1 (design 5.5) is closed: the operator account is the bypass
-actor on `main` and `next-branch` requires `push: mint`.
+actor on `main` and no agent ever holds a GitHub token (`push: mint` is the only mode).
 
 ## Rules for the executing session
 
@@ -47,7 +47,7 @@ internal/core/            Event, Identity, ThreadRef, Policy, Secret, Outcome, e
 internal/config/          mint.yaml loader, validation, reload
 internal/vault/           encrypted named credentials, unlock sources
 internal/identity/        fine-grained PAT providers by role (orchestrator, push, merge), validation, expiry tracking
-internal/proxy/           injecting TLS forward proxy
+internal/proxy/           egress-allowlisting forward proxy (optional agent-credential injection)
 internal/flow/            engine, stages, hooks, budgets, state-comment codec (HMAC)
 internal/action/          checks, git.push, github.* actions
 internal/router/          verification, dedupe, sender->project, triggers
@@ -137,7 +137,7 @@ compilers.
    (mounts, tmpfs, limits, allowed hosts for the proxy) stubbed with tests in `runtime/docker`.
 4. Reject, at load time, any secret-looking value (high-entropy token patterns, `ghp_`, `github_pat_`, PEM blocks).
 5. Config for the new operational rules: `limits` (global, per-project, per-runtime, per-repo), `stall_timeout`, retry
-   policy, hooks with timeouts, output policy (`max`, targets, label globs, protected paths), `staged`, `push: mint|agent`,
+   policy, hooks with timeouts, output policy (`max`, targets, label globs, protected paths), `staged`,
    network bundles (`github`, `go`, `node`, `python`, `copilot`) with `blocked` overriding allowed, profile `fallback`.
 6. Copilot policy compiler golden tests cover only the documented keys (`sandbox.enabled`,
    `sandbox.userPolicy.network.allowedHosts/blockedHosts`, `sandbox.credentials.envVars.<NAME>.injectHosts`);
@@ -189,7 +189,8 @@ failure feeds output to the agent and stops at `max`.
 
 ## M5. Docker runtime, session image, and proxy
 
-**Goal**: container sessions with injected scoped credentials. Depends on S3 and S4 decisions.
+**Goal**: container sessions behind an egress-allowlisting proxy, holding no GitHub credential. Depends on S3 and S4
+decisions.
 
 **Tasks**
 1. `internal/imagebuild`: `.mint/Dockerfile` read from the default branch via the API or a clean checkout; content hash;
@@ -197,10 +198,11 @@ failure feeds output to the agent and stops at `max`.
    `mint/<owner>-<repo>:<hash>`; `--pull` on update; label images with run metadata.
 2. `runtime/docker`: start containers with the hardening flags (design 7.1), workspace volume, per-run agent home mount,
    labels for orphan cleanup, wall-clock kill, log capture. Reject any repo-provided `runArgs`/mounts.
-3. `internal/proxy`: **hybrid** forward proxy (MITM and injection only on credentialed hosts, opaque CONNECT for other
-   allowed hosts, 403 otherwise), per-session name-constrained CA held in memory and delivered to the sidecar over a
-   control channel, `Authorization` overwrite, private-address refusal, per-run request log, no secrets in logs, tests
-   for bypass attempts and header stripping. Reference prototype: `docs/spikes/S3-S4-docker-and-proxy.md`.
+3. `internal/proxy`: v1 is an **allowlisting forward proxy** (opaque CONNECT for allowed hosts, 403 otherwise,
+   private-address refusal, per-run request log, no secrets in logs, tests for bypass attempts). Optional, only if a
+   placeholder agent credential is verified: hybrid mode with MITM and injection on that one host, using a per-session
+   name-constrained CA held in memory and delivered to the sidecar over a control channel, `Authorization` overwrite and
+   header-stripping tests. No GitHub credential injection in v1. Reference prototype: `docs/spikes/S3-S4-docker-and-proxy.md`.
 4. `mint-base` image definition (Dockerfile in `build/`) and docs for deriving from it; agent CLI install step.
 5. Docker access: a `docker` CLI wrapper behind a narrow interface (JSON output, label filters, orphan sweep). The Go
    SDK is deferred.
@@ -226,8 +228,8 @@ workspace and agent home, `--cap-drop` and read-only root are in effect; an orph
 1. `internal/identity`: fine-grained PAT providers by role (orchestrator, push, merge) loaded from the vault; startup
    validation per PAT (repository access, a permission probe using `X-Accepted-GitHub-Permissions`); expiry tracking with
    warnings and dispatch stop on expiry or 401; no token minting. Mint's own events are recognised by signed state markers
-   and `mint:*` labels, never by account (the actor is the operator). Config validation: `strategy: next-branch`
-   requires `push: mint` unless `integration.account: merger` is configured. Extend the existing PAT enrolment flow
+   and `mint:*` labels, never by account (the actor is the operator). No agent-side GitHub credentials exist by
+   construction (`push: mint` is the only mode). Extend the existing PAT enrolment flow
    (pre-filled creation link, master password) to the three roles.
 1a. Approval: implement `approval: label` (approver-applied `mint:approved`, `approved_sha` recorded in the signed state
    comment, label removed on head change, merge passes `approved_sha`) and the explicit feedback signals (review comment or
@@ -257,7 +259,6 @@ retrigger; two daemons cannot claim the same issue.
 ## M7. Cron trigger and nightly `next` integration
 
 **Prerequisite**: the S8 dry run (T13) and a protected `main` on a scratch personal repo merged by the operator PAT (owner bypass or ruleset user-bypass).
-Config validation rejects `strategy: next-branch` with `push: agent` unless a separate merge credential is configured.
 
 **Tasks**: cron source (timezone aware, in-process scheduler); actions `github.collect-prs` (records PR and head SHA
 pairs), `git.integrate` (true merges of head SHAs, resume by recorded `next` tip), `github.open-pr` for `next`,
