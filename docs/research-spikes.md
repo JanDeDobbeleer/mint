@@ -7,6 +7,25 @@ into [design.md](design.md). Unverified claims in the design are marked as such 
 
 Order: S0 (a short design-input review), S1 to S4 in parallel, then the rest as their milestones approach.
 
+## Status (updated after the documentation research)
+
+All spikes except S7 now have documentation findings in `docs/spikes/`. Documentation hosts for docs.github.com,
+github.github.com, docs.docker.com, developers.facebook.com and others were blocked, so findings come from search
+excerpts and raw repository sources and carry VERIFIED / INFERRED / UNVERIFIED labels. What is left is hands-on.
+
+| Spike | Findings file | Decision recorded | Remaining |
+|---|---|---|---|
+| S0 prior art | `spikes/S0-prior-art.md` | 18 ideas adopted (design 5.5 to 5.8, 12, 13); gh-aw rejected as a platform | second pass on gh-aw "protected files" and agent-side emission once reachable |
+| S1/S2 Copilot CLI, ACP | `spikes/S1-S2-copilot-cli.md` | `-p` plus allowlist (no `--allow-all-tools` needed); Mint-chosen `--session-id`; sentinel `result.json`; ACP deferred | hands-on T1 to T11 |
+| S3 Docker | `spikes/S3-S4-docker-and-proxy.md` | `docker` CLI via `os/exec`; SDK deferred; `--internal` network plus Mint sidecar | Windows and Docker Desktop checklist |
+| S4 proxy | same | hybrid proxy (MITM only on credentialed hosts); prototype works on Linux against a fake upstream | real GitHub and Copilot traffic; Windows |
+| S5 GitHub App | `spikes/S5-S6-S8-github-platform.md` | three-token model; merger App recommended for `next` (decision D-1) | tests T1 to T17 |
+| S6 state comment | same | numeric-id author check plus HMAC with `seq`; 8 KB budget | codec prototype and property tests (code) |
+| S7 Windows host sandbox | none | none | hands-on only |
+| S8 `next` integration | same as S5 | merge commit of head SHAs; recheck heads | T13 dry run |
+| S9 sources | `spikes/S9-sources.md` | email over IMAP first, read-only then approval-gated; WhatsApp later via relay | IDLE/UIDVALIDITY on the real provider; Meta terms |
+| S10 Claude adapter | `spikes/S10-claude-adapter.md` | `Agent` interface hosts Claude unchanged; repo-config lockdown via flags and managed settings; host runtime refuses Claude | hands-on tests |
+
 ---
 
 ## S0. Design-input review: safe outputs and Symphony spec (~half a day)

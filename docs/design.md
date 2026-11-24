@@ -1,83 +1,92 @@
 # Mint daemon: design
 
-Status: draft for implementation. Companion documents:
-[research-spikes.md](research-spikes.md) (questions to answer before building) and
+Status: draft v2 for implementation (incorporates the documentation research in [spikes/](spikes/)). Companion
+documents: [research-spikes.md](research-spikes.md) (status of each spike and the hands-on tests still required) and
 [implementation-plan.md](implementation-plan.md) (ordered milestones).
+
+Evidence labels used below: **[V]** verified in documentation, **[I]** inferred, **[U]** unverified and needing a
+hands-on test (tracked in the spike files). Several documentation hosts were blocked during research, so most facts
+come from excerpts or raw repository sources, not full pages.
 
 ## 1. Purpose
 
 Today `mint` launches an interactive GitHub Copilot CLI session in its local sandbox with a fine-grained PAT scoped to
 the current repository. This design extends Mint with a long-running daemon (`mint serve`) that:
 
-1. Listens for work (GitHub issues and PR events now; email and WhatsApp later; schedules).
+1. Listens for work (GitHub issues and PR events now; email next, WhatsApp later; schedules).
 2. Maps each piece of work to a **project** and a **flow** (analyze, implement, simplify, verify, publish, review loop,
    merge).
 3. Runs each agent stage in an isolated **runtime**: a Docker container by default, or the Copilot CLI sandbox on the
    Windows host when the work needs Windows.
-4. Injects narrowly scoped, short-lived credentials so the agent never holds a root secret.
+4. Gives agents only narrowly scoped, short-lived credentials, injected by a Mint-owned proxy, and applies external
+   writes itself after validating them.
 5. Treats GitHub as the only durable state: the daemon is restartable at any moment.
 
-The interactive `mint` command keeps working unchanged.
-
-The model is inspired by OpenAI's Symphony spec (poll tracker, per-issue workspace, agent run, reconcile), adapted for
-Copilot CLI, Windows, GitHub, and multi-source input. See section 16 for prior art.
+The interactive `mint` command keeps working unchanged. Mint always runs its own runners; GitHub Actions-hosted
+execution and GitHub Agentic Workflows are out of scope.
 
 ### Non-goals (for now)
 
 - Running on GitHub Actions or adopting GitHub Agentic Workflows. Mint owns its runners and execution.
-
 - Replacing the interactive launcher.
-- Windows containers, Kubernetes, or remote worker fleets.
-- Implementing email/WhatsApp/Claude adapters. The engine must allow them; they are not first deliverables.
+- Windows containers, Kubernetes, or remote worker fleets (SSH workers).
+- Implementing email, WhatsApp, or Claude adapters in the first milestones. The engine must allow them.
 - Hosting a web UI. A read-only status command is enough.
 
 ## 2. Principles
 
-1. **Two authorities.** The *repo* owns the environment and the task: `.mint/Dockerfile`, `.mint/workflow.md`
-   (prompts, default check commands). The *operator* (the person running Mint) owns trust: projects, sender mappings,
-   egress, sandbox profiles, runtime choice, merge authority, credential names. A repo can never loosen operator policy.
+1. **Two authorities.** The *repo* owns the environment and the task: `.mint/Dockerfile`, `.mint/workflow.md` and
+   `.mint/prompts/` (prompts, default check commands). The *operator* owns trust: projects, sender mappings, egress,
+   sandbox profiles, runtime choice, merge authority, hooks, credential names. A repo can never loosen operator policy.
+   Hooks are operator configuration and are never read from the repo.
 2. **Read repo-owned files from the default branch, never from an agent's workspace.** Otherwise a session can edit
    `.mint/Dockerfile` and get its own change built and run. Changes take effect after merge. A changed Dockerfile hash
    needs one-time operator approval.
-3. **All inbound content is untrusted data.** Issue bodies, PR comments, emails, chat messages are quoted into prompts,
-   never treated as instructions. Trust comes from the *verified sender identity*, not the content.
+3. **All inbound content is untrusted data.** Issue bodies, PR comments, emails, chat messages are sanitized and
+   quoted into prompts (section 5.8), never treated as instructions. Trust comes from the *verified sender identity*.
 4. **Secrets are a type, not a string.** Never in config files, argv, logs, or child environments. Held in memory
    after a single unlock at daemon start.
 5. **The core knows nothing about agents, sources, or runtimes.** It sees interfaces and registries. Each plugin can
    be deleted without touching the core. Copilot specifics live in `internal/agent/copilot` and
    `internal/runtime/hostsandbox` only.
-6. **Fail closed.** Every runtime and agent has a preflight. Any doubt aborts the launch (the existing
-   `checkSandboxCredentials` is the model).
+6. **Fail closed.** Every runtime and agent has a preflight. Any doubt aborts the launch. A checker that errors counts
+   as *unknown*, never as clean.
 7. **GitHub is the system of record.** No run database. The daemon rebuilds its view from GitHub on every start.
 8. **Programmatic work is Mint's, creative work is the agent's.** Tests, lint, push, PR creation, merge decisions are
-   deterministic actions run by Mint, not requests to the agent.
+   deterministic actions run by Mint. The agent never performs external writes (section 5.7).
 9. **Idempotent, checkpointed stages.** A crash re-runs the current stage from the last pushed state.
 10. **Every extension point ships a conformance test suite** so new sources, agents, and runtimes prove the contract.
+11. **Do not rely on an agent CLI's own sandbox for the container boundary.** The container (or, on Windows host runs,
+    the Copilot sandbox plus trust gates) is the boundary.
 
 ## 3. Decisions log
 
 | Decision | Reason |
 |---|---|
-| Docker container is the default session boundary; Copilot sandbox is the Windows-host option | One boundary independent of the agent CLI; unattended runs need broad tool permission, which is only safe inside a throwaway container. |
-| GitHub App (bot) identity for the daemon, PAT only for `mint run` / interactive | A PAT-authored PR is authored by the operator, who then cannot approve it. App tokens are short-lived and per-repo. Mint previously dropped App keys for interactive UX; the daemon is where they pay off. |
-| No run store; PR state comment + branch name + commit trailers | The trigger always results in a PR, so GitHub already holds the record. Restart and multi-machine recovery become trivial. |
-| Copilot session ID in the state comment; resume is primary, context reconstruction the fallback | Copilot stores sessions locally under its home; with a deterministic per-run `COPILOT_HOME` the ID is enough. Falls back when the home is gone. |
-| Credentials never in config; encrypted vault unlocked by master password at `serve` start | Extends the existing `master.enc` + token file design. Secret *values* are never accepted as flag values (visible in process lists and shell history); flags choose a *source* (prompt, stdin). |
-| Credential injection by a Mint-owned proxy, not by the agent CLI | Backend-independent guarantee. Copilot has `injectHosts`; Claude Code does not. |
-| Flow engine with typed stages (agent / action / wait) | Analyze, implement, simplify, test, publish, review loop, nightly integration are all the same shape. |
+| Docker container is the default session boundary; Copilot sandbox is the Windows-host option | One boundary independent of the agent CLI. |
+| GitHub App (bot) identity for the daemon; PAT only for `mint run` and interactive | A PAT-authored PR is authored by the operator, who then cannot approve it. App tokens are short-lived and per-repo. |
+| No run store; PR state comment + branch name + commit trailers | The trigger always results in a PR, so GitHub already holds the record. |
+| Copilot session ID is chosen by Mint (`--session-id <uuid>`), stored in the state comment before launch; resume is primary, context reconstruction the fallback | Documented flag [V]; removes ID discovery. |
+| Credentials never in config; encrypted vault unlocked once; secret values are never accepted as flag values | Flags choose a *source* (prompt, stdin); values in argv leak via process lists and history. |
+| Credential injection by a Mint-owned proxy in a sidecar container, not by the agent CLI | Backend-independent. Copilot has `injectHosts`; Claude Code has no equivalent. |
+| **Mint pushes, the agent does not** (default `push: mint`): the agent commits locally, Mint validates the diff, then pushes with the push credential from the host side | Closes the "agent token can write directly" gap found in the prior-art review; the container then needs no GitHub write credential. `push: agent` remains an option. |
+| Docker is driven through the `docker` CLI via `os/exec` behind an interface; the Go SDK is deferred | `github.com/docker/docker` is deprecated; `moby/moby/client` is v0.x, pre-1.0, adds ~78 packages and ~8 MB [V]. |
+| Hybrid TLS proxy: MITM and credential injection only on credentialed hosts, opaque CONNECT tunnels for other allowed hosts | Smallest interception surface. Prototype worked with git, gh, node, curl (S4). |
+| Flow engine with typed stages (agent / action / wait) | Analyze, implement, simplify, test, publish, review loop, nightly integration share one shape. |
+| First source after GitHub is email over IMAP, read-only first | No public endpoint, durable mailbox queue, lowest onboarding cost (S9). |
 
 ## 4. Architecture
 
 ```
 Sources ──Event──► Router ──► Flow engine ──► Runtime ──► Agent
 (github, email,    (verify,    (stages, actions,   (docker |     (copilot |
- whatsapp, cron)    dedupe,     waits, budgets)     hostsandbox)  claude)
-                    sender→project,
+ whatsapp, cron)    dedupe,     waits, budgets,     hostsandbox)  claude)
+                    sender→project, output checks)
                     trust tier)
      ▲                                  │
      └──── Responder (comment, reply, draft) ◄────┘
 
-Credential broker: vault ► per-session token minting ► injecting proxy
+Credential broker: vault ► per-session token minting ► injecting proxy sidecar
 State: GitHub only (PR state comment, labels, branches, commit trailers)
 ```
 
@@ -85,60 +94,70 @@ State: GitHub only (PR state comment, labels, branches, commit trailers)
 
 ```go
 type Event struct {
-    ID       string      // globally unique per source; dedupe key
+    ID       string      // globally unique per source; dedupe key (email Message-ID, wamid, GitHub event id)
     Source   string      // "github", "email", "whatsapp", "cron"
-    Kind     string      // "issue", "pr_review", "pr_comment", "message", "tick"
+    Kind     string      // "issue", "pr_review", "pr_comment", "message", "tick", "ci_completed", "run_failed"
     Sender   Identity    // verified principal
-    Verified bool        // signature / SPF+DKIM / authenticated GitHub event
-    Thread   ThreadRef   // issue, PR, mail thread, chat
+    Verified bool        // signature / dmarc=pass / authenticated GitHub event / delivered by Meta
+    Thread   ThreadRef
     Subject  string
     Body     string      // untrusted
-    Attrs    map[string]string // labels, review state, head SHA, ...
+    Attrs    map[string]string
 }
 
 type Identity struct{ Scheme, ID, Display string } // "github:login", "email:a@b.c", "whatsapp:+32..."
 type ThreadRef struct{ Source, Key string }
+type Message struct{ Text string; Template string; Attrs map[string]string }
 
 type Policy struct {                     // generic sandbox definition
-    Filesystem  FSPolicy                 // readonly, readwrite (workspace-relative tokens allowed)
-    Network     NetPolicy                // allowed hosts
+    Filesystem  FSPolicy                 // readonly, readwrite
+    Network     NetPolicy                // named bundles (github, go, node, python, copilot), allowed hosts,
+                                         // blocked hosts (override allowed), subdomain matching
     Credentials map[string][]string      // credential name -> hosts it may be injected for
-    Limits      Limits                   // cpu, memory, pids, wall clock
+    Limits      Limits                   // cpu, memory, pids, wall clock, stall timeout
 }
 
-type Secret struct{ /* zeroizable; String/MarshalJSON/Format redact */ }
+type Secret struct{ /* zeroizable; String/GoString/Format/MarshalJSON/MarshalText redact */ }
 ```
+
+Typed errors in core: `ErrWindowClosed` (reply outside a messaging window), `ErrRateLimited{RetryAfter}`,
+`ErrUnknownChecker`, among others.
 
 ### 4.2 Interfaces
 
 ```go
-// Source: inbound events plus replies on the same thread.
 type Source interface {
     Name() string
-    Run(ctx context.Context, emit func(Event)) error // owns its cursor/polling/webhook
-    Reply(ctx context.Context, t ThreadRef, m Message) error
+    Run(ctx context.Context, emit func(Event)) error // owns cursor/polling/webhook
+    Reply(ctx context.Context, t ThreadRef, m Message) error // called only after approval
 }
+type Acker interface { Ack(ctx context.Context, e Event) error } // optional, found by type assertion:
+                                                                 // marks the source message handled
 
-// Runtime: where a session executes.
 type Runtime interface {
     Name() string
-    Preflight(ctx context.Context, p Policy) error
+    Preflight(ctx context.Context, p Policy, agent AgentInfo) error // may reject an agent (e.g. Claude on host)
     Start(ctx context.Context, spec SessionSpec) (Session, error)
 }
 
-// Agent: the coding CLI. Copilot first; Claude must be addable without touching the core.
 type Agent interface {
     Name() string
-    Preflight(ctx context.Context, rt RuntimeInfo) error
-    Command(req AgentRequest) (AgentCommand, error) // prompt, policy, resume id
-    CredentialEnv() map[string]string               // credential name -> env var the CLI expects
-    Capabilities() AgentCaps                        // CanResume, StructuredEvents, ...
-    ParseResult(out SessionResult) (AgentOutcome, error) // done / needs-input / failed + summary
+    Preflight(ctx context.Context, rt RuntimeInfo) error     // version gate, token-type check, effective policy
+    Command(req AgentRequest) (AgentCommand, error)          // rebuilds the FULL lockdown every turn
+    CredentialEnv() map[string]string                        // credential name -> env var
+    Capabilities() AgentCaps
+    ParseResult(out SessionResult) (AgentOutcome, error)
+    RepoConfigPolicy() RepoConfigPolicy                      // which repo files/keys to reject or neutralize
 }
+type AgentCaps struct {
+    CanResume, ChooseSessionID, StructuredUsage, NeedsInputSignal, HostSandbox bool
+    Transport string // "prompt-flag" | "acp"
+    CostUnit  string // "ai-credits" | "usd"
+}
+type AgentRequest struct { Prompt string; Policy Policy; SessionID string; Resume bool; Model string /* ... */ }
 
-// Action: programmatic stage work.
 type Action interface {
-    Name() string // "checks", "git.push", "github.open-pr", "github.merge", ...
+    Name() string
     Do(ctx context.Context, rc *RunContext, with map[string]any) (Outcome, error)
 }
 ```
@@ -150,38 +169,45 @@ Removing Copilot means deleting two packages and their registration lines.
 
 - **Trigger**: matches an event (or cron tick) and starts or resumes a Run.
 - **Flow**: a named graph of stages.
-- **Run**: one execution of a flow. Identity is the work-item key (for example `github:owner/repo#123`). The Run record
-  is the PR (section 6).
-- **Stage kinds**
-  - `agent`: a named agent profile does creative work.
-  - `action`: Mint does deterministic work.
-  - `wait`: park until an event arrives; no process stays alive.
-- **Outcomes** select the next edge (`done`, `fail`, `retry`, `needs_input`, custom labels).
-- **Budgets** per Run: max stages, wall clock, and spend (premium requests). Exceeding any fails the Run and notifies.
-  A `mint:stop` label cancels a Run.
-- **Hooks** (`before_stage`, `after_stage`, `on_fail`, `on_done`) are engine configuration for cross-cutting concerns
-  (notify, cleanup, log). They are never agent-adapter code.
+- **Run**: one execution of a flow, identified by the work-item key (for example `github:owner/repo#123`). The Run
+  record is the PR (section 6).
+- **Stage kinds**: `agent` (named profile does creative work), `action` (Mint does deterministic work), `wait` (park
+  until an event arrives; no process stays alive).
+- **Outcomes** select the next edge: `done`, `fail`, `retry`, `needs_input`, `stalled`, custom labels.
 
 ### 5.1 Agent profiles
 
 ```yaml
 agents:
-  analyst:    { adapter: copilot, prompt: analyze,        sandbox: readonly }
-  coder:      { adapter: copilot, prompt: implement,      sandbox: default  }
-  simplifier: { adapter: copilot, prompt: simplify,       sandbox: default  }
+  analyst:    { adapter: copilot, prompt: analyze,        sandbox: readonly, tools: [read] }
+  coder:      { adapter: copilot, prompt: implement,      sandbox: default,  tools: [read, write, "shell(git:*)", "shell(go:*)"] }
+  simplifier: { adapter: copilot, prompt: simplify,       sandbox: default }
   fixer:      { adapter: copilot, prompt: address-review, sandbox: default, resume: true }
+  reviewer:   { adapter: copilot, prompt: review,         sandbox: readonly, workspace: reuse-readonly,
+                fallback: coder }
 ```
 
-A profile bundles adapter, model, prompt, sandbox, and tool allowlist. Prompts may come from `.mint/prompts/` in the
-repo (default branch). Profiles and permissions are operator-owned.
+A profile bundles adapter, model (always explicit), prompt, sandbox, tool allowlist, and an optional `fallback`
+profile used when the provider returns a rate-limit error after retries. Prompts may come from `.mint/prompts/`
+(default branch). Profiles and permissions are operator-owned. A `reviewer` profile may start on the implementer's
+retained workspace read-only.
 
 ### 5.2 Agent completion and checks
 
-The agent reports "done" via exit status, ACP stop reason, or a `result.json` sentinel in the run directory (decided by
-spike S1/S2). Mint then runs the `checks` action (test, lint, build commands) inside the same runtime and workspace.
-On failure the output is fed back to the same agent session as a new turn, bounded by `max`. Check commands live in
-project config; a repo may provide defaults in `.mint/workflow.yml` but they only run inside the sandbox boundary, and
+Headless `-p` has no needs-input state and only coarse exit codes [V]. Completion is therefore defined as: process exit
+0 **and** a non-empty final response **and** a valid Mint-owned `result.json` sentinel in the run directory
+(`status: done | needs_input | failed`, `summary`). The prompt template requires it; a missing sentinel is a failure.
+`--output-format json` (JSONL, schema undocumented [U]) is parsed only for diagnostics and usage until the schema is
+captured. For Claude Code the final `result` JSON line plays the same role (S10).
+
+After a `done`, Mint runs the `checks` action (test, lint, build commands) inside the same runtime and workspace. On
+failure the output is fed back to the same agent session as a new turn, bounded by `max`. Check commands live in
+project config; a repo may provide defaults in `.mint/workflow.yml`, but they only run inside the sandbox boundary, and
 on the host runtime only if the operator allows it.
+
+`needs_input` posts a structured marker comment and parks the Run (`wait`) with a timeout (default 7 days); on expiry
+the Run fails with a notice. Agent approval prompts are never forwarded to a human: anything not pre-approved is
+denied.
 
 ### 5.3 Flow: issue to PR
 
@@ -197,7 +223,8 @@ flows:
       publish:   { action: github.open-pr }               # PR carries the state comment
 ```
 
-Analysis output is stored in the state comment and passed to later stages as quoted input.
+Analysis output is stored in the state comment (or a committed file when large) and passed to later stages as quoted
+input.
 
 ### 5.4 Flow: PR feedback re-triggers the same Run
 
@@ -217,14 +244,11 @@ Analysis output is stored in the state comment and passed to later stages as quo
 ```
 
 PRs opened by others can start a different flow (an AI review, or nothing) through trigger conditions such as
-`author:`.
+`author:`. `github.merge` is a flow action and is never agent-requestable.
 
-Guards:
-
-- Approval authority is operator-defined: only listed identities, only on the current head SHA; a new push
-  invalidates it.
-- Ignore events authored by Mint's own identity (loop prevention); cap iterations per Run.
-- Branch protection stays on. Mint never bypasses it, so GitHub enforces required checks even if Mint's check is wrong.
+Guards: approval authority is operator-defined (listed identities, current head SHA; a new push invalidates it);
+events authored by Mint's own identity are ignored; iterations per Run are capped; branch protection stays on. The
+merge uses a short-lived *merge token* (section 7.3) minted at merge time.
 
 ### 5.5 Flow: nightly `next` integration
 
@@ -232,115 +256,251 @@ Guards:
   nightly-next:
     on: { schedule: "0 5 * * *", tz: Europe/Brussels }
     stages:
-      collect: { action: github.collect-prs,
+      collect: { action: github.collect-prs,       # records (PR, head SHA) pairs
                  where: { approved_by: [<operator>], head_matches_approval: true, draft: false,
                           base: main, not_labeled: hold }, next: build }
       build:   { action: git.integrate, branch: next, from: main,
                  strategy: sequential-merge, on_conflict: skip-and-comment, next: pr }
       pr:      { action: github.open-pr, head: next, base: main, next: ci }
-      ci:      { wait: checks_green, timeout: 90m, on_fail: notify, next: merge }
-      merge:   { action: github.merge, method: merge-commit }
+      ci:      { wait: checks_green, timeout: 90m, on_fail: notify, next: merge }   # woken by ci_completed
+      merge:   { action: github.merge, method: merge, recheck_heads: true }
 ```
 
-- `next` is rebuilt from `main` each night and force-pushed. A ruleset allows only the bot to push it.
-- Use a merge commit (not squash) so GitHub marks the source PRs as merged when their commits reach `main`.
+- `next` is rebuilt from `main` each night and force-pushed; only Mint's identity should be able to update it.
+- Each source head SHA is merged with a true merge into `next`, and `next` reaches `main` with a **merge commit**
+  (not squash or rebase). GitHub counts a PR as merged when its head is reachable from the base, so the source PRs
+  flip to merged [V]; squash and rebase do not flip them [V]. Prerequisites: merge commits allowed and no
+  linear-history rule on `main`.
+- A PR that receives a push after `next` was built does not flip and stays open; it is excluded by the final head
+  re-check (`recheck_heads`).
+- Because merging via `next` bypasses each source PR's own protections, the pre-merge re-verification of approval,
+  head SHA, and checks is mandatory.
 - Conflicting PRs are excluded with a comment. An optional `resolve-conflicts` agent stage is future work.
-- Mint does not create releases. Merging to `main` triggers the repo's release workflow; optionally a
-  `github.dispatch-workflow` action.
+- Mint does not create releases. Merging to `main` triggers the repo's release workflow (App-token pushes and merges
+  do trigger workflows, unlike `GITHUB_TOKEN` [V]); optionally a `github.dispatch-workflow` action.
 - The nightly Run is keyed by date (`next-YYYY-MM-DD` marker on its PR), so a double fire is a no-op.
+
+**Open decision D-1 (needs the operator):** how the `next` → `main` merge satisfies `main`'s required reviews without
+"Mint never bypasses". Rulesets target the base ref, so "no reviews required when head is `next`" is likely not
+expressible [I]. Options: (a) operator approves the nightly `next` PR (breaks unattended); (b) make Mint's App a
+bypass actor on `main` (rejected: the agent token shares the App identity, so it could merge anything); (c) **a second,
+separate "merger" GitHub App** that is the only bypass actor on `main`, whose key lives only in the vault and whose
+token is minted by the orchestrator at merge time and never reaches an agent. Recommendation: (c), pending hands-on
+tests T6 and T13.
+
+### 5.6 Operations: scheduling, retries, stalls, reconciliation
+
+- **Concurrency.** `limits.max_concurrent_runs` (global) plus per-project, per-runtime and per-repo caps;
+  `windows-sandbox` is capped at 1. Dispatch order: priority label, oldest event, then key. A Run is dispatched only
+  if it is not already running or retry-queued in this daemon; the `mint/<key>` branch claim guards other daemons.
+- **Stall detection.** Each agent stage has a `stall_timeout` (default 5 min, 0 disables) measured from the last
+  agent event or output byte (or stage start). On expiry Mint kills the process tree, records `stalled`, and treats it
+  as a retryable failure. Proxy buffering must not mask output (S10). Wall-clock and spend budgets apply in addition.
+  Some agents can keep `-p` alive after the final answer; do not assume exit immediately follows the result.
+- **Retries.** Failed attempts retry after `min(10s * 2^(attempt-1), 5m)`. A pending retry for a Run is replaced, not
+  duplicated. When a retry fires Mint re-reads the work item; if it is closed, unlabelled or merged, the claim is
+  released. Rate-limit and 5xx responses honour `Retry-After` first.
+- **Reconciliation every tick**, before dispatch: refresh the state of every Run being executed. Closed or merged work
+  item: stop the stage and clean the workspace. Label removed, `mint:stop` added, or approval invalidated: stop the
+  stage, keep the workspace. A refresh failure leaves running stages untouched and retries next tick.
+- **Budgets per Run**: max stages, wall clock, stall timeout, and spend. Spend is computed from the agent's absolute
+  cumulative usage, never by summing deltas, and uses an abstract unit with per-agent conversion (Copilot: AI credits
+  via `--max-ai-credits`, minimum 30, plus Mint-side turn budgets, because per-run usage is not reliably reported in
+  `-p` output [U]; Claude: USD via `--max-budget-usd`).
+- **Hooks** (`before_stage`, `after_stage`, `on_fail`, `on_done`, `before_remove`). `before_stage` failure fails the
+  attempt; the others are logged and ignored; `after_stage` runs on success, failure, stall, timeout and cancel. Every
+  hook has a timeout (default 60 s) and truncated, secret-redacted logs. Hooks never come from the repo.
+- **Per-tick preflight.** A failed config reload keeps the last good config and emits an operator-visible error.
+  Before each tick Mint re-validates credentials and config; a failure skips dispatch but never reconciliation or stop
+  handling.
+
+### 5.7 External effects: typed outputs checked by Mint ("safe outputs")
+
+Agents never perform external writes. Borrowed from gh-aw's design (prior-art review S0), adapted:
+
+- An agent emits typed **output requests** (`comment`, `open-pr`, `reply-draft`, `label`) to a file in the run
+  directory. Mint validates each against the project's output policy: type enabled, `max` per Run, target limited to
+  the Run's own thread/branch/base, label allow/block globs, length bounds, patch size and **protected paths**
+  (`.github/workflows/`, `.mint/`, and operator-listed paths).
+- Mint sanitizes each request (neutralize @mentions and closing keywords, URLs outside the allowlist, control
+  characters), runs the output checks, and only then applies it with the orchestrator token.
+- **Code reaches GitHub only via Mint.** With the default `push: mint`, the agent commits locally; the `git.push`
+  action validates the diff (size, protected paths, secret scan) and pushes with the push credential from the host
+  side. The container then holds no GitHub write credential. `push: agent` (per project, operator opt-in) lets the
+  agent push through the proxy; the same diff checks run afterwards and a violating branch is not opened as a PR.
+- **Never agent-requestable:** merge (a flow action) and customer email (an operator-approved draft whose recipients
+  are fixed by Mint).
+- **Layer 1 (always):** secret scan of patch and outputs against vault values and patterns; protected-path and size
+  rules. **Layer 2 (optional):** a no-tools, no-credential judge profile returning `prompt_injection`, `secret_leak`,
+  `malicious_patch`, `reasons`. On a hit: comments/PRs get a warning marker and a push becomes a draft PR; merges and
+  outbound messages are dropped. A judge that errors counts as *unknown*, not clean. The judge is advisory; branch
+  protection and the human gate remain the control.
+- **Staged mode.** `staged: true` per project or flow renders every output request as a preview comment/log entry
+  without applying it; used for the first runs of a new flow or sender tier.
+
+### 5.8 Input sanitization
+
+Before untrusted text is quoted into a prompt Mint neutralizes @mentions and bot triggers, strips control characters,
+converts raw HTML, and caps size (default 0.5 MB and 65k lines). Attachments are metadata only and are never
+auto-opened.
 
 ## 6. State lives in GitHub
 
-- **Run identity**: branch `mint/<key>` and the PR. Branch creation is atomic and doubles as the claim, so two daemons
-  cannot start the same Run.
-- **State comment**: one comment authored by Mint's identity on the PR (not the PR body, which humans edit) with
-  `flow`, `stage`, `attempt`, budget counters, issue link, and `agent_session`. Content is **HMAC-signed** with a key
-  derived from the vault. Accept a comment only if its author is Mint's identity *and* the HMAC verifies.
-- **Checkpoints**: each stage updates the comment and pushes its commits (commit per stage, e.g.
-  `mint(simplify): ...`, with `Mint-Run:` trailers). Agent stages commit and push at their end.
-- **Before the first commit** there is no PR. Open a draft PR as early as possible, or record the claim on the issue
-  (label `mint:claimed` plus a signed comment). Analysis output goes into the state comment so it survives crashes.
+- **Run identity and claim**: branch `mint/<key>` and the PR. Claim by `POST git/refs`: 201 means won, 422 "Reference
+  already exists" means lost or resume [I: the 422 text is only third-party-seen; test T11]. Distinguish transient 422s.
+- **State comment**: one comment on the PR (not the body, which humans edit) authored by Mint's identity, containing
+  `flow`, `stage`, `attempt`, budget counters, issue link, `agent_session`, and `seq`. It is **HMAC-signed**
+  (key derived from the vault with HKDF; payload includes `kid`, run key, `seq`, and head SHA). Accept a comment only
+  if its author matches by numeric `user.id` (plus `performed_via_github_app.id` when present) *and* the HMAC
+  verifies. Replay (lower `seq`) and deletion are handled by reconstructing from branch trailers and failing safe.
+  Hard state budget 8 KB (GitHub's comment limit is ~64 KB); large analysis output is committed as a file under
+  `.mint/runs/` on the run branch.
+- **Checkpoints**: each stage updates the comment and pushes its commits (a commit per stage, e.g.
+  `mint(simplify): ...`, with `Mint-Run:` trailers). Agent stages commit at their end; Mint pushes (5.7).
+- **Before the first commit** there is no PR: open a draft PR early, or record the claim on the issue (label
+  `mint:claimed` plus a signed comment). Analysis output goes into the state comment so it survives crashes.
 - **Recovery**: at start and each tick, list open PRs with the Mint marker whose `stage` is not `done` and reconcile.
-  Rebuild workspaces by cloning the PR branch.
-- **Cron**: no last-fire record; date-keyed PR makes double fires harmless.
-- **Non-GitHub sources**: the first action creates a tracking issue or draft PR carrying the source message ID. Dedupe is
-  a lookup of that ID. Each source also marks messages handled on its own side (mailbox label, read receipt).
-- **API cost**: reconcile with ETags and conditional requests; optional webhook source later.
+  Rebuild workspaces by cloning the PR branch. On start, remove workspace volumes, agent homes and containers (label
+  `mint.run`) of Runs whose PR is closed or merged. Workspace names are sanitized to `[A-Za-z0-9._-]`, and the
+  workspace path must resolve (after symlink evaluation) under the workspace root before every launch.
+- **Cron**: no last-fire record; the date-keyed PR makes double fires harmless.
+- **Non-GitHub sources**: the order is *emit → create tracking issue → `Ack` → mark handled*. The source message ID
+  (email `Message-ID`, WhatsApp `wamid`) goes into a machine-readable field of the issue body (`mint-source-id:`);
+  dedupe is a search for it. WhatsApp cannot be reconciled after downtime, so a buffering relay is advised.
+- **API cost**: reconcile with conditional requests: repo-wide `issues/comments?since`, open-PR list, label list; no
+  per-PR polling; the search API only for cross-repo discovery (30/min). 304 responses do not count against the primary
+  limit [V]. ETags may change with token rotation [U, T4], so the ETag cache is keyed by (URL, token generation).
+  Installation floor is 5,000 requests/hour; roughly 27 repos at a 60 s tick would exhaust it if ETags fail. Respect
+  secondary limits (100 concurrent, 900 points/min), serialize writes, and honour `Retry-After`.
 - **Stages must be idempotent**: a crash re-runs the current stage from the last pushed state.
 
 ### 6.1 Agent sessions and resume
 
-Copilot stores sessions locally under its home directory. Mint sets `COPILOT_HOME` to a deterministic per-run
-directory `<state>/agent-home/<run-key>` on the host: bind-mounted into the container, or used directly by the
-Windows sandbox runtime. The state comment records `agent_session`; the path is derived from the run key.
+Copilot stores sessions under `COPILOT_HOME/session-state/<id>/events.jsonl` [V]; the cache directory is not moved by
+`COPILOT_HOME`. Mint generates the session UUID, passes `--session-id <uuid>` on the first turn (recording it in the
+state comment before launch), then `--resume=<uuid>` on later turns. Never use bare `--resume` or `--continue` (bare
+`--resume` errors under `-p` [V]).
 
+- `COPILOT_HOME` is a deterministic per-run directory `<state>/agent-home/<run-key>` on the host, bind-mounted into the
+  container or used directly by the Windows runtime; also set a writable ephemeral cache dir (`XDG_CACHE_HOME`) and
+  `--sync-session=off`. `events.jsonl` is a sensitive transcript.
 - Never share the operator's normal Copilot home with daemon runs. Mint writes the sandbox policy into the per-run home.
 - Delete a run's agent home when the PR is merged or closed; sweep orphans periodically.
-- If the session is missing (machine change, wipe), fall back to a fresh session primed with the issue, stored
-  analysis, current diff, and review comments, and note the fallback in the state comment.
-- Resumed sessions still contain whatever untrusted content the agent read earlier. Sandbox, token scope, and gates stay
-  fully in force on resume.
-- `--resume`/`--continue` behaviour in headless and sandboxed modes is unverified (spike S1).
+- If the session is missing or resume exits non-zero [U: behaviour unverified], fall back to a fresh session primed
+  with the issue, stored analysis, current diff, and review comments, and note the fallback in the state comment.
+- Resumed sessions keep untrusted content the agent read earlier; sandbox, token scope, and gates stay in force.
+- Claude Code resume does not restore tool, settings, MCP or permission flags, so `Command` rebuilds the whole
+  lockdown on every turn (S10).
 
 ## 7. Runtimes
 
 ### 7.1 Docker runtime (default)
 
-- Image defined by `.mint/Dockerfile` (toolchain only: no editor, shells, or prompt extras). Mint publishes a small
-  `mint-base` image (non-root user, git, gh, CA hook, agent CLI). Both `.mint/Dockerfile` and any devcontainer may
-  `FROM` it so they share a base without sharing bloat.
-- Build and update: `mint image build|update|prune`. Images are tagged `mint/<owner>-<repo>:<dockerfile-hash>`.
-  `update` rebuilds with `--pull` when the Dockerfile hash or base digest changes; `serve` can do this on a schedule;
-  `prune` removes old tags. Builds get no secrets and no host mounts. Build from the default branch version only.
-- Run-time settings are Mint's, not the Dockerfile's: all capabilities dropped, `no-new-privileges`, default seccomp,
-  pids/memory/CPU caps, read-only root with tmpfs scratch, non-root user. A repo's `devcontainer.json` `runArgs`,
-  `mounts`, `privileged`, `initializeCommand`, and `features` are never honoured.
-- Workspace: a shallow clone in a volume (not a `git worktree`: its `.git` file points back to the main repo).
-- Egress: the container's only route out is Mint's injecting proxy (7.3). On Docker Desktop this likely needs an
-  `--internal` network plus a Mint-owned sidecar proxy container (spike S3/S4).
-- Inside the container the agent runs with broad tool permission (for Copilot `-p` requires `--allow-all-tools`); the
-  blast radius is the container, the scoped token, and the proxy allowlist.
+- Image defined by `.mint/Dockerfile` (toolchain only). Mint publishes a small `mint-base` image (non-root user, git,
+  gh, CA and proxy environment, agent CLI). Both `.mint/Dockerfile` and any devcontainer may `FROM` it.
+- Build and update: `mint image build|update|prune`. Tags `mint/<owner>-<repo>:<dockerfile-hash>`; `update` rebuilds
+  with `--pull` when the hash or base digest changes; `serve` can do this on a schedule; `prune` removes old tags.
+  Builds get no secrets and no host mounts, and use the default-branch Dockerfile only.
+- **Docker access**: Mint drives the `docker` CLI via `os/exec` behind a narrow interface (JSON output, label
+  filters, orphan sweep). The Go SDK (`github.com/moby/moby/client`) is deferred. The Docker socket and host `/tmp`
+  are never mounted into containers; temp variables are per run; host environment is forwarded only through an
+  allowlist.
+- **Run settings are Mint's, not the Dockerfile's**: all capabilities dropped, `no-new-privileges`, default seccomp,
+  pids/memory/CPU caps, read-only root with tmpfs scratch, non-root user. Repo `devcontainer.json` `runArgs`, `mounts`,
+  `privileged`, `initializeCommand`, `features` are never honoured. Hardening flags on Docker Desktop are inferred to
+  work [I] and need the Windows test list.
+- **Workspace**: a named volume populated by an in-container clone (not a `git worktree`, whose `.git` points back to
+  the main repo; avoid `/mnt/c` bind mounts). The per-run agent home is the only host-path mount.
+- **Egress topology** (the only design Docker Desktop can enforce [I]): an `--internal` network
+  (`mint-int-<run>`) containing the agent container and a **Mint-owned proxy sidecar**, which has a second interface on
+  a normal egress network (`mint-egress`). The agent's only route is the proxy; `HTTPS_PROXY` is a convenience and
+  `--internal` is the boundary. A host proxy reached via `host.docker.internal` is rejected because it cannot be
+  enforced. Whether `--internal` also blocks the host gateway and external DNS on Docker Desktop is unverified [U];
+  mitigations if not: do not publish the sidecar, separate egress network, `--dns` to an unroutable address.
+- **Agent permissions**: in `-p` mode anything not pre-approved is denied, so profiles use a tool allowlist
+  (`--allow-tool='shell(git:*)'`, `write`, ...) plus `--deny-tool` for dangerous commands; `--allow-all-tools` is only
+  an option inside the container where the container is the boundary. Also set `--no-ask-user`, `--no-auto-update`,
+  `-s`, and an explicit `--model`.
+- Optional hardening: Enhanced Container Isolation (Docker Business only) and gVisor/Kata/Firecracker behind the
+  same interface. Note the WSL2 shared-kernel caveat.
 
 ### 7.2 Windows host runtime (`windows-sandbox`)
 
-For Windows-specific code and integrations. It is today's Copilot sandbox launch.
+For Windows-specific code and integrations. It is today's Copilot sandbox launch, and **supports Copilot only** (the
+Claude Code sandbox does not exist on native Windows; the runtime refuses Claude).
 
-- Same preflight as today: sandbox policy check, `projectConfiguration`, env allowlist, isolated `GH_CONFIG_DIR`,
-  `--secret-env-vars`, MCP disablement.
-- Selection is declared in the project (`runs-on: windows-sandbox`) or by an issue label such as `mint:windows`; operator
-  config decides which projects may use it. A label alone never escalates.
-- The host process is not a strong boundary (README states this). Therefore: trusted senders only, concurrency 1,
-  dedicated per-run Copilot home, and a plan/approval gate by default.
-- The generic `Policy` is compiled into Copilot's `sandbox.userPolicy`, `injectHosts`, and Windows
-  `allowLocalNetwork` settings.
+- Same preflight as today: sandbox policy check, project-settings checks, env allowlist, isolated `GH_CONFIG_DIR`,
+  `--secret-env-vars`, MCP disablement. Preflight reads the *effective* settings (`copilot config`) and fails closed;
+  a managed policy such as `sandbox.failIfUnavailable` or `permissions.disableBypassPermissionsMode` can change
+  behaviour.
+- Selection: project `runs-on: windows-sandbox` or an issue label such as `mint:windows`; operator config decides which
+  projects may use it. A label alone never escalates.
+- The host process is not a strong boundary (README). Therefore: trusted senders only, concurrency 1, dedicated per-run
+  Copilot home, and a plan/approval gate by default.
+- The generic `Policy` compiles into Copilot settings: `sandbox.enabled`, `sandbox.userPolicy.network.allowedHosts` and
+  `blockedHosts`, `sandbox.credentials.envVars.<NAME>.injectHosts` [V]. `allowLocalNetwork` (needed on Windows for the
+  credential proxy) and the project-configuration key names are not in the official pages read [U]; gate them on the
+  installed version. Built-in file tools are not OS-enforced, so combine with `--allow-tool` write patterns. Do not use
+  `copilot sandbox ca trust` (OS-global).
 
 ### 7.3 Credential broker and injecting proxy
 
 - The root credential lives in the vault (App private key, or an operator PAT for `mint run`). Per-session credentials
-  are derived from it: for the App, a ≤1h installation token narrowed to one repo and minimal permissions
-  (`POST /app/installations/{id}/access_tokens` with `repositories` and `permissions`), revoked at run end.
-- Containers receive only placeholder values. A local forward proxy terminates TLS with a per-session CA, adds
-  `Authorization` for GitHub hosts only, and enforces the host allowlist. Hosts and which credential applies to them
-  come from `Policy.Credentials`.
-- Two-token split: an **orchestrator token** (Issues read, label write, PR read) never enters a sandbox and does polling,
-  claiming, and state transitions; an **agent token** (Contents and PR write, scoped to one repo) is the only one the
-  session can use.
-- Run duration is capped below token TTL. Longer work restarts the turn with a fresh token via resume.
-- The Copilot credential (`COPILOT_GITHUB_TOKEN`) and model keys can use the same proxy with dummy values; if a CLI
-  refuses a placeholder, pass as an env var and rely on egress restriction.
+  are derived from it: installation tokens last 1 hour and can be narrowed with `repositories` and `permissions`, never
+  beyond the App's own permissions [V]; revoked at run end (`DELETE /installation/token`). Do not assume token length
+  or shape (a stateless `ghs_APPID_JWT` format may roll out); redact by exact value.
+- **Three tokens** (per-endpoint permission mapping is unverified; confirm with `X-Accepted-GitHub-Permissions`):
+  - *Orchestrator token*: Issues write, Pull requests write, Contents read, Checks read, Commit statuses read. Polling,
+    claiming labels, state comments, review requests. Never enters a sandbox.
+  - *Push token*: Contents write + Pull requests write, one repo, held by Mint's `git.push`/`open-pr` actions (and
+    given to the agent only with `push: agent`).
+  - *Merge token*: short-lived, one repo, Contents + Pull requests write, minted at merge time and used within the
+    step. For the nightly `next` → `main` merge see decision D-1 (separate merger App).
+  - The agent session itself gets read-only access at most. Nothing is granted Administration, Workflows, secrets, or
+    members. Rulesets cannot restrict an App to `mint/*` and `next` by actor, so the enforceable controls are: no
+    bypass for the agent's App on `main`, required PR/reviews/checks on `main`, optional restrict-creations/updates
+    rulesets on other refs with an operator admin bypass, and no `workflows` permission. Push rulesets (path rules)
+    exist only on private/internal repos.
+- **Proxy (hybrid mode)**: a Mint-written Go forward proxy (stdlib `crypto/tls` and `net/http`; `goproxy` is the
+  fallback if h2/websockets prove necessary). For each host in `Policy.Credentials` it does MITM and header injection;
+  all other allowlisted hosts are opaque CONNECT tunnels; everything else gets 403. The per-session CA key and real
+  tokens live only in the sidecar's memory, delivered over a control channel from the daemon (not env, not disk); the
+  agent container gets only the public CA certificate and placeholder tokens (`GH_TOKEN=ghs_...` placeholder). Prototype
+  (S4) verified git, gh 2.89, node 22 and curl through it against a fake upstream; git needs no credential in the
+  container because the proxy injects on the first request; gh accepted a `ghs_` placeholder; Node needs
+  `NODE_USE_ENV_PROXY=1`. Real GitHub auth and real Copilot traffic are untested [U].
+- Proxy hardening: refuse requests to private, loopback, link-local and Docker gateway addresses (SSRF); pin DNS;
+  overwrite any agent-supplied `Authorization`; Basic for git on `github.com`, token/Bearer for `api.github.com`;
+  HTTP/1.1 on the MITM leg first; idle and total timeouts; per-run request log (host, allowed/denied) kept with the
+  transcript for allowlist tuning; redacted logs. Fallback if a client pins certificates: a credential helper over a
+  socket.
+- The image sets `HTTPS_PROXY`, `NO_PROXY` for the proxy host, `NODE_USE_ENV_PROXY=1`, and CA variables
+  (`SSL_CERT_FILE`, `GIT_SSL_CAINFO`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`) pointing at a tmpfs path.
+- **Per-agent credential notes.** Copilot: `COPILOT_GITHUB_TOKEN` must be a fine-grained PAT with the Copilot Requests
+  permission, or a `gho_`/`ghu_` token; classic `ghp_` is rejected [V]; precedence `COPILOT_GITHUB_TOKEN` >
+  `GH_TOKEN` > `GITHUB_TOKEN`; always set it explicitly and keep it separate from the repo token; placeholder behaviour
+  and `HTTPS_PROXY`/`NODE_EXTRA_CA_CERTS` outside the sandbox are unverified [U]. Claude Code: `ANTHROPIC_API_KEY` is
+  always used under `-p`; `HTTPS_PROXY` and `NODE_EXTRA_CA_CERTS` are honoured, SOCKS is not [V]; a placeholder swapped
+  by the proxy is likely [I]; `ANTHROPIC_BASE_URL` can avoid TLS interception entirely. Run duration is capped below
+  token TTL; longer work restarts the turn with a fresh token via resume.
 
 ## 8. Credentials, vault, and unlock
 
-- Config files contain credential *names* only.
-- The vault extends the existing design: random store key encrypted in `master.enc` under the master password; separate
-  encrypted files per credential (existing PBKDF2 + AES-GCM with associated data). New named credentials:
-  `github-app-key`, `github-operator-pat`, `copilot-token`, `imap-password`, `whatsapp-token`, `webhook-secret`.
-- `mint serve` unlocks once and keeps secrets in memory as `Secret`.
-- Unlock sources are flags that choose a *source*, never carry a value: hidden prompt (default), `--password-stdin`
-  (automation). Optionally later: OS credential store. A plain `--password=...` flag is rejected.
-- `mint creds add|list|rm` manages credentials with hidden prompts.
-- Secrets never reach argv, child env (except via the allowlisted injection path), logs, or error strings. Enforced by
-  the type (redacting `String`, `Format`, `MarshalJSON`) and by tests.
+- Config files contain credential *names* only. Config load rejects secret-looking values (`ghp_`, `github_pat_`, PEM
+  blocks, high-entropy strings).
+- The vault extends the existing design: random store key in `master.enc` under the master password; separate
+  encrypted files per credential (PBKDF2 + AES-GCM with associated data bound to the credential name). Named
+  credentials: `github-app-key`, `github-merger-app-key`, `github-operator-pat`, `copilot-token`,
+  `email-imap-password`, `email-oauth-refresh-token`, `email-oauth-client-secret`, `whatsapp-token`,
+  `whatsapp-app-secret`, `whatsapp-verify-token`, `webhook-secret`.
+- **The vault needs a runtime write path**: OAuth refresh tokens rotate, so the unlocked daemon must atomically
+  re-encrypt a credential file.
+- `mint serve` unlocks once and keeps secrets in memory as `Secret`. Unlock sources are flags that choose a *source*:
+  hidden prompt (default), `--password-stdin`. A plain `--password=...` flag is rejected. Optionally later: OS credential
+  store.
+- `mint creds add|list|rm` manages credentials with hidden prompts; `list` shows names only.
+- Secrets never reach argv, child env (except via the allowlisted injection path), logs, or error strings: enforced by
+  the type and by tests.
 
 ## 9. Sources, routing, and trust
 
@@ -350,6 +510,8 @@ projects:
     repo: github.com/me/acme-api
     runs-on: container          # or windows-sandbox
     sandbox: default
+    push: mint                  # mint | agent
+    staged: false
     senders:
       - { match: "github:org/maintainers", trust: maintainer }
       - { match: "email:cto@acme.com",     trust: customer }
@@ -360,33 +522,45 @@ triggers:
   - { source: email,  to: support@me.dev, project: by-sender }
 ```
 
-- **Router**: verify the event, dedupe on `Event.ID`, resolve sender → project → trust tier, match a trigger, enqueue.
-- **Trust tiers map to capabilities.** `maintainer` can push to `mint/*` branches. `customer` gets a read-only token and
-  produces a *draft* reply that needs operator approval before it is sent. Unknown senders are dropped.
-- **Verification**: email requires SPF/DKIM alignment (`From` is spoofable); WhatsApp requires webhook signature
-  verification; GitHub events come through authenticated API calls (or signed webhooks).
+- **Router**: verify, dedupe on `Event.ID`, resolve sender → project → trust tier, match a trigger, enqueue. First
+  implementation covers GitHub only.
+- **Trust tiers map to capabilities.** `maintainer` can have branches pushed (by Mint) to `mint/*`. `customer` gets a
+  read-only token and produces a *draft* reply that needs operator approval; the router calls `Reply` only after
+  approval. Unknown senders are dropped. Rate caps limit tracking-issue creation per sender.
+- **Event vocabulary** for triggers includes `ci_completed` (wakes `wait: checks_green` instead of polling) and
+  `run_failed` (drives failure notification through the same flow engine).
+- **Verification.**
+  - GitHub: authenticated API calls (or signed webhooks).
+  - Email: accept only `dmarc=pass` (aligned) in an `Authentication-Results` header whose `authserv-id` matches the
+    configured `trusted_authserv` and which sits in the provider-added block; ignore ARC; map identity on the `From`
+    address-spec only; `From` alone is spoofable.
+  - WhatsApp: verify `X-Hub-Signature-256` on the raw body. `Verified` means "delivered by Meta"; the sender number is
+    Meta-asserted. Replies outside the 24-hour window require an approved template (`ErrWindowClosed`).
 - **Conversation continuity**: sessions are keyed by `ThreadRef`; follow-ups resume the same Run.
-- First implementation covers GitHub only. Email and WhatsApp must need nothing beyond a new `Source` plus config.
+- **First source after GitHub: email over IMAP, read-only first**, then approval-gated replies (IDLE plus a poll
+  backstop, `Message-ID` as `Event.ID`, provider-added mailbox label as handled-state; go-imap v2 is beta, so pin it
+  behind an internal wrapper). WhatsApp comes later and needs a public HTTPS endpoint (tunnel or buffering relay) and
+  has unresolved platform-policy risk for AI providers.
 
 ## 10. Configuration layout
 
 | Location | Owner | Contents |
 |---|---|---|
 | `<config dir>/config.json` | existing | interactive launcher (remote, Copilot path) |
-| `<config dir>/mint.yaml` | operator | projects, senders, triggers, flows, agent profiles, sandbox profiles, hooks, budgets |
+| `<config dir>/mint.yaml` | operator | projects, senders, triggers, flows, agent profiles, sandbox profiles, hooks, budgets, output policy |
 | `<config dir>/vault/` | operator | encrypted credentials, `master.enc` |
 | `<config dir>/runs/agent-home/<key>/` | daemon | per-run agent homes |
 | repo `.mint/Dockerfile` | repo | session image (toolchain only) |
-| repo `.mint/workflow.md` or `.mint/prompts/` | repo | prompt templates, default checks |
+| repo `.mint/workflow.md`, `.mint/prompts/` | repo | prompt templates, default checks |
 
-All repo-owned files are read from the default branch. Operator config is validated on load; unknown keys are errors.
-Dynamic reload of operator config and repo prompts is supported on change, with a validation gate (a bad reload keeps
-the previous good config).
+All repo-owned files are read from the default branch. Operator config is validated on load (unknown keys are
+errors). Dynamic reload of operator config and repo prompts is supported with a validation gate (a bad reload keeps the
+last good config). A repo prompt changing under a running Run takes effect at the next stage.
 
 ## 11. CLI surface
 
 - `mint [copilot args]`, `mint setup`: unchanged.
-- `mint run <issue-url|number>`: one-shot Run of `issue-to-pr`; first usable milestone; uses the PAT vault entry or App.
+- `mint run <issue-url|number>`: one-shot Run of `issue-to-pr`; first usable milestone.
 - `mint serve`: the daemon (prompts for the master password once).
 - `mint image build|update|prune`.
 - `mint creds add|list|rm`.
@@ -396,55 +570,82 @@ the previous good config).
 
 | Asset | Threat | Controls |
 |---|---|---|
-| Root credentials (App key, PAT, Copilot token) | exfiltration by agent or repo code | vault + `Secret` type; never in child env; proxy injection; per-session derived tokens |
-| Host filesystem and user profile | agent or build escapes | container isolation (caps dropped, non-root, read-only root, no host mounts except workspace and agent home); Windows runtime only for trusted work |
-| Repository | malicious push, workflow tampering | token scoped to one repo and minimal permissions; push to `mint/*` enforced by rulesets; Workflows write off by default; branch protection; human-gated merge by default |
-| Run state | tampering with state comment (budget reset, stage skip) | author check + HMAC |
-| Prompt injection via issues, PRs, email | agent follows attacker instructions | untrusted-data quoting; trust tiers; egress allowlist; no secrets in the sandbox; read-only token for low trust; outbound messages drafted for approval |
-| Approvals | forged or stale approval triggers merge | operator-listed identities; head-SHA match; ignore Mint's own events; branch protection retained |
-| Dockerfile / devcontainer / repo settings | repo-controlled code execution at build or run time | default-branch reads; hash approval; Mint-owned run flags; `projectConfiguration`-style rejection of conflicting repo settings |
-| Cost | runaway loops | per-Run budgets, iteration caps, `mint:stop` |
+| Root credentials (App keys, PAT, Copilot token) | exfiltration by agent or repo code | vault + `Secret` type; never in child env; proxy injection; per-session derived tokens; agent session has no write credential by default |
+| Host filesystem and user profile | agent or build escapes | container isolation (caps dropped, non-root, read-only root, no Docker socket, no host mounts except agent home); Windows runtime only for trusted work |
+| Repository | malicious push, workflow tampering | Mint validates and pushes; protected paths (`.github/workflows/`, `.mint/`); no `workflows` permission; rulesets; branch protection; human-gated merge; agent's App has no bypass on `main` |
+| Run state | tampering with the state comment | author check by numeric id + HMAC with `seq` |
+| Prompt injection via issues, PRs, email | agent follows attacker instructions | untrusted-data quoting and input sanitization; trust tiers; egress allowlist; no secrets in the sandbox; typed output requests; optional judge; read-only token for low trust; outbound messages drafted for approval; staged mode |
+| Approvals | forged or stale approval triggers merge | operator-listed identities; head-SHA match; ignore Mint's own events; branch protection retained; pre-merge re-verification for `next` |
+| Dockerfile / devcontainer / repo agent config | repo-controlled code execution | default-branch reads; hash approval; Mint-owned run flags; per-adapter `RepoConfigPolicy` (Copilot: reject conflicting settings; Claude: `--setting-sources user`, `--strict-mcp-config`, `--disable-slash-commands`, managed settings baked into the image, because `-p` has no trust dialog and would otherwise run repo hooks, `env`, `apiKeyHelper` and `.mcp.json` servers) |
+| Proxy | SSRF, bypass, CA misuse | internal network is the boundary; private-address refusal; name-constrained per-session CA kept in memory; Authorization overwrite; request log |
+| Cost | runaway loops | per-Run budgets, stall timeout, iteration caps, `mint:stop` |
+| Source spoofing | forged email or message | DMARC-pass from the trusted authserv; webhook signatures; sender allowlist |
 
-Known residual risks: shared-kernel container escape (mitigation path: gVisor, Kata, or Firecracker behind the same
-`Runtime` interface), exfiltration through allowed hosts (keep the allowlist short), malicious code pushed to a branch
-(rulesets, review).
-
-Use the "safe outputs" pattern (borrowed from gh-aw) where practical: the agent *requests* external actions (comment, label, PR) and a
-separate trusted step validates and applies them.
+Residual risks: shared-kernel container escape (WSL2 caveat; gVisor/Kata/Firecracker behind the same `Runtime`
+interface), exfiltration through allowed hosts (keep the allowlist short and log egress), the proxy as a trust surface,
+malicious code pushed to a branch (rulesets, review), unknown Copilot unattended-use terms (section 15).
 
 ## 13. Observability and failure handling
 
-- Structured logs per Run key (no secrets). Per-run transcript retained in the agent home until cleanup.
-- Failures are reported on the PR/issue (and via an email responder when configured), including which stage and why.
-- Retries: bounded per stage; backoff for rate limits and transient GitHub errors.
-- Graceful shutdown: stop dispatching, let current stages checkpoint, kill containers and process trees (Windows Job
-  Objects), revoke installation tokens.
+- Structured logs per Run key (no secrets). Per-run transcript and egress log retained in the agent home until cleanup.
+- Failures are reported on the PR/issue (and by an email responder when configured), naming the stage and cause, via the
+  `run_failed` event.
+- Retries and stalls follow section 5.6. A hung or failing checker, judge, or sink must not take down the daemon and is
+  never read as success.
+- Graceful shutdown: stop dispatching, let stages checkpoint, kill containers and process trees (Windows Job Objects),
+  revoke installation tokens.
 
 ## 14. Windows specifics
 
-- Daemon host is Windows; Docker (Linux containers) is available through Docker Desktop/WSL2.
-- Process-tree kill via Job Objects; long-path handling for workspaces; named-pipe Docker endpoint.
+- The daemon host is Windows; Docker (Linux containers) through Docker Desktop/WSL2, endpoint
+  `npipe:////./pipe/docker_engine`.
+- Process-tree kill via Job Objects; long-path handling for workspaces.
+- Webhook-based sources (WhatsApp, optional GitHub webhooks) need a loopback listener plus a tunnel or relay;
+  `cloudflared` as a Windows service is the default, a cloud relay the resilient option.
 - The existing `ui_windows.go`, MSIX packaging, and AppInstaller flow stay; the daemon ships in the same binary.
-- Build and test on Linux, macOS, and Windows (CI matrix already does).
+- CI already runs Linux, macOS, and Windows.
 
 ## 15. Open questions
 
-1. Copilot CLI headless and ACP behaviour, completion signalling, resume, and whether session history includes
-   anything sensitive (S1, S2).
-2. Forcing egress through the proxy on Docker Desktop for Windows (S3, S4).
-3. Licensing and terms for unattended use of a Copilot seat or `COPILOT_GITHUB_TOKEN`; premium request billing.
-4. GitHub App ownership (a personal app installed on selected repos is likely enough) and which permissions per flow.
-5. "Update" scope: this design treats it as session-image refresh; Mint's own binary already updates via AppInstaller.
-6. Whether to adopt a pure-Go YAML library (`go.yaml.in/yaml/v3` is already an indirect dependency) for `mint.yaml`.
+1. **D-1** (section 5.5): the nightly `next` → `main` merge versus required reviews. Needs the operator's decision;
+   recommendation is a separate merger App.
+2. Copilot terms for unattended or multi-user use of a seat, and `COPILOT_GITHUB_TOKEN` licensing. Docs endorse CI and
+   headless use with env tokens; the terms text was not reached. A human must read it. Also Anthropic's terms for
+   subscription tokens in an unattended service, and WhatsApp AI-provider terms.
+3. Whether `--internal` networks on Docker Desktop block the host gateway and external DNS (S3, Windows test).
+4. Copilot behaviour with a missing session on `--resume`, `--output-format json` event schema, exit codes, and
+   per-run usage reporting (S1 hands-on tests).
+5. Whether a placeholder `COPILOT_GITHUB_TOKEN` and model-endpoint proxying (`HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`)
+   work outside the Copilot sandbox.
+6. `allowLocalNetwork` and project-configuration key names for the Copilot sandbox on the installed version.
+7. ETag stability across token rotation; bot-authored PR workflow-approval gate; per-endpoint App permission mapping;
+   who can edit or delete others' comments; sharing of rate limits between installation tokens (S5/S6 tests T1 to T17).
+8. Gmail/Graph backend choice if the operator's mailbox lacks IMAP; Meta business-verification requirements and
+   pricing; Graph subscription lifetimes.
+9. "Update" scope: this design treats it as session-image refresh; Mint's own binary already updates via AppInstaller.
+10. `go.yaml.in/yaml/v3` (already an indirect dependency) for `mint.yaml`.
 
 ## 16. Prior art and what we borrow
 
-- **OpenAI Symphony spec** (and the Itervox Go implementation): poll, per-issue workspace, `WORKFLOW.md`, reconcile.
-  Itervox supports Claude Code and Codex, runs with permissions skipped in high-trust local setups, and does not manage
-  scoped credentials; used as inspiration, not a base.
-- **GitHub Agentic Workflows (gh-aw)**: Markdown workflows compiled to Actions with Copilot CLI as default engine,
-  containerized agent, firewall, safe outputs. **Decision: not adopted.** Mint always runs its own runners; only the
-  "safe outputs" idea is borrowed (S0).
+- **OpenAI Symphony spec** and the **Itervox** Go implementation: poll, per-issue workspace, reconcile, retry,
+  stall detection, hook semantics, event vocabulary. Itervox runs Claude Code and Codex, skips permissions in
+  high-trust setups, and does not manage scoped credentials; inspiration only.
+- **GitHub Agentic Workflows (gh-aw)**: **not adopted**; Mint always runs its own runners. Borrowed: safe outputs
+  (typed requests validated and applied by a separate trusted step), protected-path rules, optional threat-detection
+  judge, network allowlist ergonomics, per-run egress log. Parts of gh-aw's docs were unreachable (S0), so its
+  protected-files rules and agent-side emission mechanism are unverified.
 - **GitHub Copilot coding agent**, **Claude Code GitHub Action**, **Open SWE**, **Composio Agent Orchestrator**,
-  **Baton**: issue-to-PR automation of varying scope; none combine Copilot CLI, Windows-native sandbox sessions,
-  scoped credential injection, multi-source triggers, and the flow model above.
+  **Baton**: issue-to-PR automation of varying scope; none combine Copilot CLI, Windows-native sandbox sessions, scoped
+  credential injection, multi-source triggers, and this flow model.
+
+## 17. Research index
+
+| Spike | File | Status |
+|---|---|---|
+| S0 prior art | [S0-prior-art.md](spikes/S0-prior-art.md) | documentation done; gh-aw second pass blocked by host |
+| S1/S2 Copilot CLI, ACP | [S1-S2-copilot-cli.md](spikes/S1-S2-copilot-cli.md) | documentation done; hands-on T1 to T11 pending |
+| S3/S4 Docker and proxy | [S3-S4-docker-and-proxy.md](spikes/S3-S4-docker-and-proxy.md) | documentation and Linux prototype done; Windows tests pending |
+| S5/S6/S8 GitHub platform | [S5-S6-S8-github-platform.md](spikes/S5-S6-S8-github-platform.md) | documentation done; T1 to T17 pending |
+| S9 sources | [S9-sources.md](spikes/S9-sources.md) | documentation done; hands-on pending |
+| S10 Claude adapter | [S10-claude-adapter.md](spikes/S10-claude-adapter.md) | documentation done; hands-on pending |
+| S7 Windows host sandbox | (none) | hands-on only |
