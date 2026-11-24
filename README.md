@@ -163,7 +163,7 @@ mint --model YOUR_MODEL
 mint -p "Explain this repository" -s
 ```
 
-Except for the `setup` and `config` commands, arguments after `mint` are passed to Copilot unchanged, including `--help`,
+Except for the `setup`, `creds` and `config` commands, arguments after `mint` are passed to Copilot unchanged, including `--help`,
 `--version`, and `--`. mint rejects flags that disable sandboxing or override secret filtering. Arguments are passed
 without a shell. Copilot starts at the checkout root by default, including
 when you invoke mint from a subdirectory. A non-default or ambiguous remote is never silently selected.
@@ -174,6 +174,23 @@ The PAT's expiration is chosen during creation and may be limited by organizatio
 revokes it. It remains encrypted in Mint's configuration until you revoke it in GitHub or replace its local copy.
 Temporary Git and GitHub CLI configuration is removed on handled exit. Copilot keeps session history in your normal
 home; launch through Mint again when resuming so credentials are revalidated for the current remote.
+
+## Credentials
+
+Mint keeps named credentials in the same encrypted store as repository tokens, under the same master password:
+
+```powershell
+mint creds add copilot-token
+mint creds add webhook-secret --password-stdin   # master password from the first line of standard input
+mint creds list
+mint creds rm webhook-secret
+```
+
+Values are typed at a hidden prompt and are never accepted as flags or arguments, which would leak into process lists
+and shell history; Mint rejects such options without echoing them. `--password-stdin` only supplies the master
+password. `mint creds list` shows names and last-changed times, never values, and needs no password. Each credential
+file is bound to its name, so copying one file over another fails to decrypt. `mint creds --help` lists the supported
+names. Nothing reads these credentials yet; the daemon milestones build on them.
 
 ## Development
 

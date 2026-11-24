@@ -533,7 +533,8 @@ Claude Code sandbox does not exist on native Windows; the runtime refuses Claude
 - Config files contain credential *names* only. Config load rejects secret-looking values (`ghp_`, `github_pat_`, PEM
   blocks, high-entropy strings).
 - The vault extends the existing design: random store key in `master.enc` under the master password; separate
-  encrypted files per credential (PBKDF2 + AES-GCM with associated data bound to the credential name). Named
+  encrypted files per credential (PBKDF2 + AES-GCM with associated data bound to the credential name). The vault root is
+  the config directory: `master.enc`, `tokens/` (per-repository tokens, unchanged) and `credentials/<name>.enc`. Named
   credentials: `github-app-private-key` (the App id and installation id are non-secret config), `github-operator-pat`
   (interactive and `mint run` only), `copilot-token`,
   `email-imap-password`, `email-oauth-refresh-token`, `email-oauth-client-secret`, `whatsapp-token`,
@@ -592,7 +593,7 @@ triggers:
 |---|---|---|
 | `<config dir>/config.json` | existing | interactive launcher (remote, Copilot path) |
 | `<config dir>/mint.yaml` | operator | projects, senders, triggers, flows, agent profiles, sandbox profiles, hooks, budgets, output policy |
-| `<config dir>/vault/` | operator | encrypted credentials, `master.enc` |
+| `<config dir>/master.enc`, `tokens/`, `credentials/` | operator | the vault: master key, per-repository tokens, named credentials |
 | `<config dir>/runs/agent-home/<key>/` | daemon | per-run agent homes |
 | repo `.mint/Dockerfile` | repo | session image (toolchain only) |
 | repo `.mint/workflow.md`, `.mint/prompts/` | repo | prompt templates, default checks |
