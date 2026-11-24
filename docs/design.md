@@ -64,7 +64,7 @@ execution and GitHub Agentic Workflows are out of scope.
 | Decision | Reason |
 |---|---|
 | Docker container is the default session boundary; Copilot sandbox is the Windows-host option | One boundary independent of the agent CLI. |
-| A dedicated machine-user GitHub account with scoped PATs; **no GitHub App** | PRs authored by a distinct identity so the operator can approve them and Mint can ignore its own events. PATs are what the operator already creates. Limits: no per-session minting; fine-grained PATs do not work for a collaborator on another user's repo, so personal repos need a classic PAT scoped by collaborator membership. |
+| The operator's own account with **fine-grained, repo-scoped PATs split by role; no GitHub App, no machine user** | Repos are only the operator's own, so fine-grained PATs work and stay scoped. Cost: Mint's actions appear as the operator, so GitHub's native Approve is unavailable (no self-approval) and Mint recognises its own events by signed markers, not by account. Approval is an explicit signal (`approval: label` by default). No per-session minting; expiry is tracked. |
 | No run store; PR state comment + branch name + commit trailers | The trigger always results in a PR, so GitHub already holds the record. |
 | Copilot session ID is chosen by Mint (`--session-id <uuid>`), stored in the state comment before launch; resume is primary, context reconstruction the fallback | Documented flag [V]; removes ID discovery. |
 | Credentials never in config; encrypted vault unlocked once; secret values are never accepted as flag values | Flags choose a *source* (prompt, stdin); values in argv leak via process lists and history. |
@@ -246,13 +246,14 @@ Approval does not trigger a per-PR merge flow. Merging is owned by the project's
 is the only path by which Mint merges anything.
 
 Guards: approval authority is operator-defined (listed identities, current head SHA; a new push invalidates it);
-events authored by Mint's own identity are ignored; iterations per Run are capped; branch protection stays on.
+events matching Mint's signed markers or Mint-applied `mint:*` labels are ignored (the actor is the operator's account, so
+actor-based filtering is impossible); iterations per Run are capped; branch protection stays on.
 
 ### 5.5 Integration strategies: `merge` and `next-branch`
 
 Merging is a per-project setting. When a project enables a strategy, **every approved PR goes through it**, and Mint
-merges nothing outside it. The gate is always the **original pull request**: approved by an operator-listed
-approver on its current head SHA, not a draft, mergeable, and green. Nothing later in the pipeline asks for another
+merges nothing outside it. The gate is always the **original pull request**: approved (see below) on its current head SHA, not a draft,
+mergeable, and green. Nothing later in the pipeline asks for another
 approver.
 
 ```yaml
@@ -260,6 +261,8 @@ projects:
   acme-api:
     integration:
       strategy: merge              # merge | next-branch | off
+      approval: label              # label | review
+      approval_label: mint:approved
       approvers: [<operator>]
       where: { draft: false, base: main, not_labeled: hold, checks_green: true }
       # strategy: merge
@@ -269,6 +272,20 @@ projects:
       schedule: "0 5 * * *"
       tz: Europe/Brussels
 ```
+
+**Approval signal.** Because Mint's PRs are authored by the operator's account, GitHub's Approve button is unavailable,
+so the default is `approval: label`: the operator applies `mint:approved` to a PR. Rules:
+
+- Mint never applies the approval label itself. A `labeled` timeline event whose actor is in `approvers` counts.
+- When Mint first observes the label it records the head SHA as `approved_sha` in the signed state comment. If the head
+  changes afterwards (new push) Mint **removes the label**, comments, and the approval is void until re-applied. The
+  merge passes `approved_sha`, so a push after approval cannot merge.
+- Review feedback uses the same style of explicit signals: a PR review comment (or `/mint fix` comment) from an approver
+  starts the `pr-feedback` flow; `mint:changes` can be used as an alternative trigger.
+- `approval: review` (native GitHub review state) is also supported, but requires the PR author to differ from the
+  approver (a separate machine account), and is off by default.
+- Labels can be applied only by users with triage access or above, which on a personal repo means the operator and any
+  collaborators the operator added.
 
 **`merge`**: on every `interval` tick, collect PRs (any PR, not only Mint's) that satisfy the gate and merge each one
 with the merge token, passing the approved head SHA so a push after approval cannot slip through. Ordering is oldest
@@ -305,17 +322,16 @@ branch:
   do trigger workflows, unlike `GITHUB_TOKEN` [V]); optionally a `github.dispatch-workflow` action.
 - The nightly Run is keyed by date (`next-YYYY-MM-DD` marker on its PR), so a double fire is a no-op.
 
-**How `next` reaches a protected `main` (decision D-1, closed).** `main` keeps its protections; the merge account is a
-**bypass actor on `main`** and merges the `next` PR as the orchestrator. Individual users can be repository-ruleset
-bypass actors since May 2026 [V: changelog; personal-account repos inferred, [U] confirm in the UI/API]. This is
-acceptable because under the default `push: mint` the agent session holds no credential of that account at all: only
-Mint's own code ever uses the merge PAT. The configuration validator therefore enforces: `strategy: next-branch`
+**How `next` reaches a protected `main` (decision D-1, closed).** `main` keeps its protections; the operator account, as
+repository owner or via a ruleset bypass entry (individual users can be bypass actors since May 2026 [V: changelog;
+personal-account repos inferred, [U] confirm]), merges the `next` PR as the orchestrator. On a personal repo the owner can
+also simply not require reviews. This is acceptable because under the default `push: mint` the agent session holds no
+credential of that account at all: only Mint's own code ever uses the merge PAT. The configuration validator therefore enforces: `strategy: next-branch`
 requires `push: mint`. With `push: agent` the agent would hold a token of the bypass account, so config load fails
-unless a separate merger account PAT is configured (`integration.account: merger`) that never reaches an agent. The
+unless a separate merge credential is configured (`integration.account: merger`) that never reaches an agent. The
 remaining risk is a bug in Mint's merge action, which is why the collect-time and pre-merge re-verification and the
 audit comment on each merged source PR are mandatory. Test T6/T13 still confirm the ruleset behaviour (bypass visible
-in the audit log, required checks on `next` enforced). The no-bypass alternative is a second machine account that
-approves the `next` PR through normal protection; not chosen.
+in the audit log, required checks on `next` enforced).
 
 ### 5.6 Operations: scheduling, retries, stalls, reconciliation
 
@@ -474,18 +490,17 @@ Claude Code sandbox does not exist on native Windows; the runtime refuses Claude
 
 ### 7.3 Credential broker and injecting proxy
 
-- **Identity: a dedicated machine-user account, scoped PATs, no GitHub App.** The daemon acts as its own GitHub account
-  (GitHub permits a machine account [I]) that is a collaborator only on the repos you add, so account membership is
-  part of the scope. Its PRs are authored by that account, so the operator can approve them, and events by that account
-  are recognised as Mint's own and ignored. Using the operator's own PAT remains supported for `mint run` and the
-  interactive launcher, but is **not** recommended for the daemon: GitHub blocks self-approval of one's own PR, and
-  every Mint action would be indistinguishable from the operator's.
-- **Token type depends on who owns the repo.** A fine-grained PAT (selected repositories, minimal permissions, the
-  creation flow Mint already guides with a pre-filled link) is preferred. Fine-grained PATs **cannot be used by a
-  collaborator on a repo owned by another user** [V: docs list it as unsupported], and write access to others' public
-  repos is classic-PAT only [V]. So: org-owned repos (where the org allows fine-grained PATs) use fine-grained PATs of
-  the machine user; **personal-account repos need a classic PAT** for the machine user, scoped only by the account's
-  collaborator membership, or the repos move into an org. Configure `token_type` per project and validate at start.
+- **Identity: the operator's own account with fine-grained PATs, no GitHub App.** Mint is only for the operator's own
+  repositories, so each PAT is a fine-grained PAT with the operator as resource owner, restricted to selected
+  repositories and minimal permissions (the creation flow Mint already guides with a pre-filled link). The
+  collaborator limitation of fine-grained PATs [V] does not apply because the repos are the operator's own.
+- **Consequence: the author is the operator.** Mint's commits, PRs, comments and merges all appear as the operator's
+  account. Therefore (a) GitHub's native "Approve" is unavailable on Mint's PRs (no self-approval [V]), so approval is an
+  explicit signal (section 5.5, `approval: label`); (b) Mint cannot recognise its own events by account, so it uses
+  signed state markers and the set of `mint:*` labels it applies (approval labels are never applied by Mint); (c) commits
+  carry a Mint author identity and `Mint-Run:` trailers. A dedicated machine-user account remains possible later for
+  native reviews (`approval: review`), but then personal-repo access needs a classic PAT (fine-grained cannot be used as a
+  collaborator on another user's repo [V]); not chosen.
 - **No minting.** PATs are created by the operator, have an operator-chosen expiry (possibly org-limited), and cannot be
   narrowed per session or revoked per run. Mitigations: roles are split across PATs (below); under `push: mint` no agent
   holds any GitHub credential; Mint validates each PAT at start (repo access plus a permission probe), warns N days
@@ -497,9 +512,9 @@ Claude Code sandbox does not exist on native Windows; the runtime refuses Claude
   - *Push PAT*: Contents write + Pull requests write, held by Mint's `git.push`/`open-pr` actions (and given to the
     agent only with `push: agent`).
   - *Merge PAT*: Contents + Pull requests write, used by the `merge` strategy per PR and by the `next-branch` merge,
-    where its account is a bypass actor on `main` (5.5). Roles may share one account; a bypass is a property of the
-    *account*, not the token, so a classic PAT of a bypass account can also push `main` directly: keep it in the vault
-    only, never in a sandbox.
+    where the operator account's admin/bypass on `main` applies (5.5). All three PATs belong to the same account; a bypass is
+    a property of the *account*, not the token, so the merge PAT is kept in the vault only, never in a sandbox, and
+    permissions differ per PAT (the push and orchestrator PATs cannot merge).
   - The agent session itself gets read-only access at most. Nothing is granted Administration, Workflows, secrets, or
     members. Rulesets cannot restrict an actor to `mint/*` and `next`, so the enforceable controls are: no bypass for
     any account whose token an agent can hold (the merge account's bypass on `main` is used only by Mint's merge action),
@@ -662,9 +677,9 @@ malicious code pushed to a branch (rulesets, review), unknown Copilot unattended
 4. Whether a placeholder `COPILOT_GITHUB_TOKEN` and model-endpoint proxying (`HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`)
    work outside the Copilot sandbox.
 5. `allowLocalNetwork` and project-configuration key names for the Copilot sandbox on the installed version.
-6. Bot-authored PR workflow-approval gate; per-endpoint PAT permission mapping; who can edit or delete others' comments;
-   whether a machine user's classic PAT is acceptable for personal repos (versus moving repos into an org so fine-grained
-   PATs work); ruleset user-bypass on personal-account repos; rate-limit sharing across one account's PATs (spike S5).
+6. Per-endpoint fine-grained PAT permission mapping; label `labeled` timeline-event actor reliability and timing for
+   approval; who can edit or delete others' comments; ruleset user-bypass on personal-account repos; whether PAT pushes
+   and PR creation need workflow approval; rate-limit sharing across one account's PATs (spike S5).
 7. Gmail/Graph backend choice if the operator's mailbox lacks IMAP; Meta business-verification requirements and
    pricing; Graph subscription lifetimes.
 8. "Update" scope: this design treats it as session-image refresh; Mint's own binary already updates via AppInstaller.

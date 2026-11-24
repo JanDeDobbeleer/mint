@@ -19,7 +19,7 @@ excerpts and raw repository sources and carry VERIFIED / INFERRED / UNVERIFIED l
 | S1/S2 Copilot CLI, ACP | `spikes/S1-S2-copilot-cli.md` | `-p` plus allowlist (no `--allow-all-tools` needed); Mint-chosen `--session-id`; sentinel `result.json`; ACP deferred | hands-on T1 to T11 |
 | S3 Docker | `spikes/S3-S4-docker-and-proxy.md` | `docker` CLI via `os/exec`; SDK deferred; `--internal` network plus Mint sidecar | Windows and Docker Desktop checklist |
 | S4 proxy | same | hybrid proxy (MITM only on credentialed hosts); prototype works on Linux against a fake upstream | real GitHub and Copilot traffic; Windows |
-| S5 GitHub identity (PATs; App route dropped) | `spikes/S5-S6-S8-github-platform.md` | machine-user account with PATs by role; D-1 closed: the merge account is a `main` bypass actor, `next-branch` requires `push: mint`; fine-grained PATs do not work for collaborators on personal repos | tests T1 to T17 |
+| S5 GitHub identity (PATs; App route dropped) | `spikes/S5-S6-S8-github-platform.md` | operator account with fine-grained PATs by role; approval by label; D-1 closed: the operator account merges `next`, `next-branch` requires `push: mint` | tests T1 to T17 |
 | S6 state comment | same | numeric-id author check plus HMAC with `seq`; 8 KB budget | codec prototype and property tests (code) |
 | S7 Windows host sandbox | none | none | hands-on only |
 | S8 `next` integration | same as S5 | merge commit of head SHAs; recheck heads | T13 dry run |
@@ -121,26 +121,26 @@ from a container holding only a dummy token; a negative test showing exfil to a 
 
 ## S5. GitHub identity with scoped PATs (the GitHub App route was dropped)
 
-**Decision made**: no GitHub App. Mint acts as a dedicated machine-user account with PATs split by role (design 7.3).
+**Decision made**: no GitHub App and no machine user. Mint uses the operator's own fine-grained PATs, split by role
+(design 7.3); approval is an explicit label signal (design 5.5).
 The App-specific research in `spikes/S5-S6-S8-github-platform.md` (installation tokens, JWT signing, narrowing,
 revocation) is superseded; its rate-limit, merge-semantics, ruleset, and comment findings still apply.
 
 **Questions**
-- Can the machine user's fine-grained PAT reach repos in an org (org setting "Allow access via fine-grained personal
-  access tokens", approval policy)? Confirm it cannot reach a personal-account repo as a collaborator, and whether a
-  classic PAT scoped by collaborator membership is acceptable for those repos.
-- Minimal permission sets per role (orchestrator, push, merge) for fine-grained PATs; use `X-Accepted-GitHub-Permissions`.
-- Self-approval: confirm the operator can approve a PR authored by the machine user, and that the review-required rule
-  counts it.
-- Ruleset bypass for an individual user on a personal-account repo (May 2026 changelog), and audit-log visibility.
-- Do PAT-authored pushes, PRs and merges trigger Actions workflows? Does a bot-authored PR need "approve and run
-  workflows"?
-- Rate limits shared across one account's PATs; ETag behaviour with a stable token; secondary limits.
-- PAT expiry limits and a reminder flow; whether an expired PAT yields a distinguishable 401.
-- Rulesets: restrict-updates with admin bypass for `mint/*` and `next`; push rulesets exist only on private/internal repos.
+- Minimal fine-grained permission sets per role (orchestrator, push, merge); use `X-Accepted-GitHub-Permissions`; confirm
+  a PAT limited to selected repos behaves as expected on a personal repo.
+- Label approval: is the `labeled` timeline event's actor and `created_at` reliable and fast to observe (ETag/events
+  API vs timeline)? Race between a push and label observation; confirm label removal on head change works.
+- Mint's PRs authored by the operator: confirm the Approve button is unavailable and what review states the operator
+  can submit on their own PR (comment only).
+- Merge into protected `main` by the operator PAT: owner/admin bypass versus ruleset user-bypass (May 2026 changelog) on
+  a personal repo; audit-log visibility.
+- Do PAT-authored pushes, PRs and merges trigger Actions workflows? Does the PR need "approve and run workflows"?
+- Rate limits shared across one account's PATs; ETag behaviour with stable tokens; secondary limits.
+- PAT expiry limits and reminder flow; whether an expired PAT yields a distinguishable 401.
 
-**Exit criteria**: scratch repos (one personal, one in an org) with a machine user; run the permission probes, a PR
-authored by the machine user approved by the operator, and a bypass merge into a protected `main`.
+**Exit criteria**: a scratch personal repo with three fine-grained PATs: label-approval flow with stale-approval removal,
+a bypass or owner merge into a protected `main`, and the permission probes recorded.
 
 ---
 

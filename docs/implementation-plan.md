@@ -3,7 +3,7 @@
 Read [design.md](design.md) first (v2, which incorporates the documentation research in [spikes/](spikes/)), and
 [research-spikes.md](research-spikes.md) for the status of each spike and the hands-on tests still required. This plan
 is written so a fresh session can execute it milestone by milestone. **The hands-on tests in M0 can still change later
-milestones; update this file when a decision lands.** Decision D-1 (design 5.5) is closed: the merge account is a bypass
+milestones; update this file when a decision lands.** Decision D-1 (design 5.5) is closed: the operator account is the bypass
 actor on `main` and `next-branch` requires `push: mint`.
 
 ## Rules for the executing session
@@ -46,7 +46,7 @@ internal/mint/            CLI wiring (setup, interactive launch, run, serve, ima
 internal/core/            Event, Identity, ThreadRef, Policy, Secret, Outcome, errors
 internal/config/          mint.yaml loader, validation, reload
 internal/vault/           encrypted named credentials, unlock sources
-internal/identity/        PAT providers by role (orchestrator, push, merge), validation, expiry tracking
+internal/identity/        fine-grained PAT providers by role (orchestrator, push, merge), validation, expiry tracking
 internal/proxy/           injecting TLS forward proxy
 internal/flow/            engine, stages, hooks, budgets, state-comment codec (HMAC)
 internal/action/          checks, git.push, github.* actions
@@ -68,7 +68,7 @@ real tools, listed per spike in the spike files and summarized in [research-spik
   and resume, missing-session behaviour, sentinel contract, `COPILOT_HOME` layout, sandbox keys, token types).
 - Docker Desktop on Windows: the checklist in `S3-S4-docker-and-proxy.md` (`--internal` network behaviour, hardening
   flags, sidecar topology, proxy against real GitHub and Copilot traffic).
-- A scratch repo with the machine-user account and PATs (the App-specific tests in the spike file are superseded; see its header): tests in `S5-S6-S8-github-platform.md` (token narrowing, ETag stability,
+- A scratch personal repo with three fine-grained PATs (the App-specific tests in the spike file are superseded; see its header): tests in `S5-S6-S8-github-platform.md` (token narrowing, ETag stability,
   merge and ruleset behaviour, claim race, `next` dry run).
 - S7 (Windows host sandbox, headless).
 - A read of the Copilot unattended-use terms (and, for confirmation, test T6/T13 on ruleset bypass behaviour).
@@ -223,12 +223,15 @@ workspace and agent home, `--cap-drop` and read-only root are in effect; an orph
 **Goal**: the daemon reacts to GitHub activity end to end.
 
 **Tasks**
-1. `internal/identity`: PAT providers by role (orchestrator, push, merge) loaded from the vault; startup validation per
-   PAT (repository access, a permission probe using `X-Accepted-GitHub-Permissions`, token type per project:
-   fine-grained or classic); expiry tracking with warnings and dispatch stop on expiry or 401; account identity
-   (login/id) used to recognise and ignore Mint's own events; no token minting. Config validation:
-   `strategy: next-branch` requires `push: mint` unless `integration.account: merger` is configured. Extend the
-   existing PAT enrolment flow (pre-filled creation link, master password) to the three roles and the machine user.
+1. `internal/identity`: fine-grained PAT providers by role (orchestrator, push, merge) loaded from the vault; startup
+   validation per PAT (repository access, a permission probe using `X-Accepted-GitHub-Permissions`); expiry tracking with
+   warnings and dispatch stop on expiry or 401; no token minting. Mint's own events are recognised by signed state markers
+   and `mint:*` labels, never by account (the actor is the operator). Config validation: `strategy: next-branch`
+   requires `push: mint` unless `integration.account: merger` is configured. Extend the existing PAT enrolment flow
+   (pre-filled creation link, master password) to the three roles.
+1a. Approval: implement `approval: label` (approver-applied `mint:approved`, `approved_sha` recorded in the signed state
+   comment, label removed on head change, merge passes `approved_sha`) and the explicit feedback signals (review comment or
+   `/mint fix`, optional `mint:changes`). `approval: review` is optional and needs a distinct author.
 2. `source/github`: reconcile through repo-wide `issues/comments?since`, the open-PR list, and the label list, all
    conditional; no per-PR polling; search only for cross-repo discovery within a 30/min budget; emit `Event`s with
    `Verified` set from the authenticated API, including `ci_completed` and `run_failed`; optional webhook receiver later.
@@ -253,8 +256,8 @@ retrigger; two daemons cannot claim the same issue.
 
 ## M7. Cron trigger and nightly `next` integration
 
-**Prerequisite**: the S8 dry run (T13) and a ruleset with the merge account as bypass actor on `main` in a scratch repo (confirm user-bypass works on a personal-account repo).
-Config validation rejects `strategy: next-branch` with `push: agent` unless a separate merger account is configured.
+**Prerequisite**: the S8 dry run (T13) and a protected `main` on a scratch personal repo merged by the operator PAT (owner bypass or ruleset user-bypass).
+Config validation rejects `strategy: next-branch` with `push: agent` unless a separate merge credential is configured.
 
 **Tasks**: cron source (timezone aware, in-process scheduler); actions `github.collect-prs` (records PR and head SHA
 pairs), `git.integrate` (true merges of head SHAs, resume by recorded `next` tip), `github.open-pr` for `next`,

@@ -1,4 +1,4 @@
-> **Superseded in part (later decision):** Mint does not use a GitHub App; it uses a machine-user account with PATs
+> **Superseded in part (later decision):** Mint does not use a GitHub App; it uses the operator's own fine-grained PATs
 > by role (design 7.3, spike S5 in research-spikes.md). The installation-token, JWT, narrowing, revocation and App
 > permission-matrix sections below no longer apply. The rate-limit, merge-semantics, ruleset, comment and `next`
 > findings still do, with PAT in place of installation token.
