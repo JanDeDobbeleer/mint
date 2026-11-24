@@ -24,6 +24,8 @@ Copilot CLI, Windows, GitHub, and multi-source input. See section 16 for prior a
 
 ### Non-goals (for now)
 
+- Running on GitHub Actions or adopting GitHub Agentic Workflows. Mint owns its runners and execution.
+
 - Replacing the interactive launcher.
 - Windows containers, Kubernetes, or remote worker fleets.
 - Implementing email/WhatsApp/Claude adapters. The engine must allow them; they are not first deliverables.
@@ -407,7 +409,7 @@ Known residual risks: shared-kernel container escape (mitigation path: gVisor, K
 `Runtime` interface), exfiltration through allowed hosts (keep the allowlist short), malicious code pushed to a branch
 (rulesets, review).
 
-Adopt the gh-aw "safe outputs" idea where practical: the agent *requests* external actions (comment, label, PR) and a
+Use the "safe outputs" pattern (borrowed from gh-aw) where practical: the agent *requests* external actions (comment, label, PR) and a
 separate trusted step validates and applies them.
 
 ## 13. Observability and failure handling
@@ -427,14 +429,13 @@ separate trusted step validates and applies them.
 
 ## 15. Open questions
 
-1. Does gh-aw already cover the GitHub-only flows (spike S0)? That decides how much daemon to build.
-2. Copilot CLI headless and ACP behaviour, completion signalling, resume, and whether session history includes
+1. Copilot CLI headless and ACP behaviour, completion signalling, resume, and whether session history includes
    anything sensitive (S1, S2).
-3. Forcing egress through the proxy on Docker Desktop for Windows (S3, S4).
-4. Licensing and terms for unattended use of a Copilot seat or `COPILOT_GITHUB_TOKEN`; premium request billing.
-5. GitHub App ownership (a personal app installed on selected repos is likely enough) and which permissions per flow.
-6. "Update" scope: this design treats it as session-image refresh; Mint's own binary already updates via AppInstaller.
-7. Whether to adopt a pure-Go YAML library (`go.yaml.in/yaml/v3` is already an indirect dependency) for `mint.yaml`.
+2. Forcing egress through the proxy on Docker Desktop for Windows (S3, S4).
+3. Licensing and terms for unattended use of a Copilot seat or `COPILOT_GITHUB_TOKEN`; premium request billing.
+4. GitHub App ownership (a personal app installed on selected repos is likely enough) and which permissions per flow.
+5. "Update" scope: this design treats it as session-image refresh; Mint's own binary already updates via AppInstaller.
+6. Whether to adopt a pure-Go YAML library (`go.yaml.in/yaml/v3` is already an indirect dependency) for `mint.yaml`.
 
 ## 16. Prior art and what we borrow
 
@@ -442,7 +443,8 @@ separate trusted step validates and applies them.
   Itervox supports Claude Code and Codex, runs with permissions skipped in high-trust local setups, and does not manage
   scoped credentials; used as inspiration, not a base.
 - **GitHub Agentic Workflows (gh-aw)**: Markdown workflows compiled to Actions with Copilot CLI as default engine,
-  containerized agent, firewall, safe outputs. Evaluate first (S0). Borrow safe outputs.
+  containerized agent, firewall, safe outputs. **Decision: not adopted.** Mint always runs its own runners; only the
+  "safe outputs" idea is borrowed (S0).
 - **GitHub Copilot coding agent**, **Claude Code GitHub Action**, **Open SWE**, **Composio Agent Orchestrator**,
   **Baton**: issue-to-PR automation of varying scope; none combine Copilot CLI, Windows-native sandbox sessions,
   scoped credential injection, multi-source triggers, and the flow model above.

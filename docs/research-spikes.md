@@ -5,30 +5,27 @@ Each spike answers a question that changes the design. Time-box them; write find
 `spikes/` or a scratch branch, never merged into `internal/`). A spike ends with a **decision** that is folded back
 into [design.md](design.md). Unverified claims in the design are marked as such and map to a spike here.
 
-Order: S0 first (it can shrink the project), then S1 to S4 in parallel, then the rest as their milestones approach.
+Order: S0 (a short design-input review), S1 to S4 in parallel, then the rest as their milestones approach.
 
 ---
 
-## S0. Does gh-aw already cover the GitHub-only flows? (go/no-go, ~1 day)
+## S0. Design-input review: safe outputs and Symphony spec (~half a day)
 
-**Why**: GitHub Agentic Workflows (Markdown workflows compiled to Actions, Copilot CLI default engine, containerized
-agent behind a firewall, safe outputs) may deliver issue-to-PR, review loops, and scheduled jobs with a better-reviewed
-safety model than we would build. This is technical preview software.
+**Decision already made**: Mint builds and runs its own runners. GitHub Agentic Workflows (gh-aw) and GitHub Actions
+execution are out of scope. This spike only mines prior art for ideas.
 
 **Questions**
-- Triggers: issues, labels, PR review events, comments, `schedule`. Can a review event resume the same agent session?
-- Multi-stage: analysis → implement → simplify → programmatic tests → PR. Can tests run as deterministic steps?
-- Merge: can it merge on approval? On a nightly integration branch (`next`) with green CI?
-- Identity and tokens: how are write permissions scoped? Do pushes by its token trigger CI?
-- Execution: hosted vs self-hosted runners; Windows runners; can a Windows-specific stage run on a Windows runner?
-- Sources beyond GitHub: email/WhatsApp (probably no).
+- gh-aw "safe outputs": how are requested actions (comment, label, PR) declared, validated, and applied by a separate
+  trusted step? Can the pattern fit Mint's actions (`github.open-pr`, `comment`, `github.merge`, outbound replies)?
+- gh-aw threat detection between agent output and the apply step: what is checked, and is any of it worth copying?
+- OpenAI Symphony SPEC.md: reconciliation, stall detection, retry/backoff, workspace hooks, dynamic reload. Anything
+  the design misses?
+- Itervox (Go Symphony implementation): event types and automation triggers worth matching.
 
-**Method**: read https://github.github.com/gh-aw/ (the session that did the initial research could not reach this
-host; allow it or paste the pages), install the extension in a scratch repo, implement the issue-to-PR flow and the
-nightly job.
+**Method**: read https://github.github.com/gh-aw/ (the initial research session could not reach this host; allow it or
+paste pages), the Symphony SPEC.md, and the Itervox README. No installation or prototype needed.
 
-**Decision**: (a) adopt gh-aw for GitHub-only flows and use the Mint daemon only for Windows-native sessions and
-non-GitHub sources, (b) build the daemon as designed and borrow ideas, or (c) hybrid. Update design section 1 and the plan.
+**Decision**: a short list of adopted ideas, folded into design sections 5, 12, and 13.
 
 ---
 

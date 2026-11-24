@@ -59,10 +59,10 @@ internal/imagebuild/      .mint/Dockerfile build, hash, update, prune
 
 ## M0. Spikes (blocking decisions)
 
-Run S0 first; then S1 to S5 in parallel. See [research-spikes.md](research-spikes.md).
+Run S0 (a short design-input review) and S1 to S5 in parallel. See [research-spikes.md](research-spikes.md).
 
 **Done when**: each spike has `docs/spikes/S<n>-*.md` with a decision, and `design.md` (sections 5.2, 6.1, 7, 15) and
-this plan are updated. If S0 says "adopt gh-aw", stop and re-scope with the maintainer before M1.
+this plan are updated. Mint always runs its own runners; gh-aw and Actions-hosted execution are out of scope.
 
 ---
 
@@ -253,6 +253,7 @@ M2 and M3 can overlap after M1. M5 can start in parallel with M4's later tasks o
 ## Starting prompt for the implementation session
 
 > Read `docs/design.md`, `docs/research-spikes.md`, and `docs/implementation-plan.md` in this repository. Do Milestone 0
-> first: write the spike findings under `docs/spikes/` (start with S0 and S1) and update the design and plan with the
-> decisions. Do not begin Milestone 1 until I confirm the S0 decision. Follow the "Rules for the executing session"
+> first: write the spike findings under `docs/spikes/` (start with S1 and S2, the Copilot CLI spikes) and update the
+> design and plan with the decisions. Mint always runs its own runners; do not evaluate or adopt GitHub Agentic
+> Workflows. Do not begin Milestone 1 until I confirm the M0 decisions. Follow the "Rules for the executing session"
 > section. Work on a new branch, commit with Conventional Commits, and do not open a pull request unless I ask.
