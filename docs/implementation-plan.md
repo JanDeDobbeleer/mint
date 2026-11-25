@@ -80,6 +80,11 @@ real tools, listed per spike in the spike files and summarized in [research-spik
 - S7 (Windows host sandbox, headless).
 - A read of the Copilot unattended-use terms (and, for confirmation, test T6/T13 on ruleset bypass behaviour).
 
+**Status (2026-11-25)**: the implementing session ran Copilot T1 to T7 and T9 and the Docker Desktop checklist; results and
+decisions are in [spikes/M0-handson-results.md](spikes/M0-handson-results.md). Still open: Copilot T8, T10, T11 (gate M5 and
+ACP), the GitHub App tests T1 to T17 (need the operator to create the App; gate M6), and the terms read. M4 uses a PAT and the
+host runtime, so it is unblocked.
+
 **Done when**: each hands-on result is recorded in its spike file with a decision, and `design.md` (sections 5.2, 6.1,
 7, 15) and this plan are updated. M1 and M2 do not depend on these results and may start first. Mint always runs its
 own runners; gh-aw and Actions-hosted execution are out of scope.
